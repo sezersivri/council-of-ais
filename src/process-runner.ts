@@ -14,7 +14,18 @@ export async function runCliProcess(
   const startTime = Date.now();
 
   return new Promise((resolve) => {
-    const env = { ...process.env, ...options.env };
+    // Build env: spread process.env, then apply overrides.
+    // Keys set to undefined are deleted (unset from child process).
+    const env: Record<string, string> = { ...process.env } as Record<string, string>;
+    if (options.env) {
+      for (const [key, value] of Object.entries(options.env)) {
+        if (value === undefined) {
+          delete env[key];
+        } else {
+          env[key] = value;
+        }
+      }
+    }
 
     const proc = spawn(command, args, {
       cwd: options.cwd,

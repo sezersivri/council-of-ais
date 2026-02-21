@@ -42,16 +42,13 @@ export function detectConsensus(
   state: DiscussionState,
   requiredConsecutiveAgrees: number = 1,
 ): ConsensusStatus {
-  const participants = state.participants;
-
-  // Get the latest round number
   const maxRound = state.entries.length > 0
     ? Math.max(...state.entries.map((e) => e.round))
     : 0;
 
   if (maxRound === 0) return 'emerging';
 
-  // Get latest entry per participant from the most recent round
+  // Count signals from participants who actually responded this round
   const latestSignals = new Map<ParticipantId, ConsensusSignal>();
   for (const entry of state.entries) {
     if (entry.round === maxRound && entry.parsedSections) {
@@ -59,8 +56,10 @@ export function detectConsensus(
     }
   }
 
-  // Not all participants have spoken in this round yet
-  if (latestSignals.size < participants.length) {
+  const respondedCount = latestSignals.size;
+
+  // Need at least 2 respondents to evaluate consensus
+  if (respondedCount < 2) {
     return 'emerging';
   }
 
@@ -68,16 +67,18 @@ export function detectConsensus(
   const agreeCount = signals.filter((s) => s === 'AGREE').length;
   const partialCount = signals.filter((s) => s === 'PARTIALLY_AGREE').length;
 
-  if (agreeCount === participants.length) {
+  // Full consensus: all respondents agree (handles partial failures gracefully)
+  if (agreeCount === respondedCount) {
     if (requiredConsecutiveAgrees > 1) {
-      return checkConsecutiveConsensus(state, participants, requiredConsecutiveAgrees)
+      return checkConsecutiveConsensus(state, requiredConsecutiveAgrees)
         ? 'full'
         : 'emerging';
     }
     return 'full';
   }
 
-  if ((agreeCount + partialCount) >= Math.ceil(participants.length * 0.66)) {
+  // Partial: supermajority agrees or partially agrees
+  if ((agreeCount + partialCount) >= Math.ceil(respondedCount * 0.66)) {
     return 'partial';
   }
 
@@ -90,7 +91,6 @@ export function detectConsensus(
 
 function checkConsecutiveConsensus(
   state: DiscussionState,
-  participants: ParticipantId[],
   requiredRounds: number,
 ): boolean {
   const maxRound = Math.max(...state.entries.map((e) => e.round));
@@ -98,7 +98,7 @@ function checkConsecutiveConsensus(
   for (let r = maxRound; r > maxRound - requiredRounds; r--) {
     if (r < 1) return false;
     const roundEntries = state.entries.filter((e) => e.round === r);
-    if (roundEntries.length < participants.length) return false;
+    if (roundEntries.length < 2) return false;
     const allAgree = roundEntries.every(
       (e) => e.parsedSections?.consensusSignal === 'AGREE',
     );
