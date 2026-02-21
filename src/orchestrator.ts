@@ -50,7 +50,7 @@ async function runPreflightChecks(
     const { participant, result, cliPath } = settled.value;
     if (result.exitCode === 0 || result.stdout.trim()) {
       const version = result.stdout.trim().split('\n')[0].slice(0, 60);
-      log(`  [${participant.id}] OK — ${version}`);
+      log(`  [${participant.id}] OK — ${version} (model: ${participant.modelDisplay()})`);
     } else {
       log(`  [${participant.id}] FAILED`);
       failures.push(
@@ -100,6 +100,7 @@ async function runParticipantTurn(
   verbose: boolean,
   onStdoutData?: (chunk: string) => void,
 ): Promise<{ response: string; durationMs: number } | null> {
+  participant.lastFailureWasTokenLimit = false;
   const { command, args, stdinData, env } = participant.buildCommand(prompt);
 
   if (verbose) {
@@ -116,6 +117,16 @@ async function runParticipantTurn(
 
   if (result.timedOut) {
     log(`  [${participant.id}] TIMED OUT after ${formatDuration(result.durationMs)}`);
+    return null;
+  }
+
+  // Check for token/context limit before generic failure handling
+  if (participant.isTokenLimitError(result)) {
+    participant.lastFailureWasTokenLimit = true;
+    log(`  [${participant.id}] TOKEN LIMIT reached (${formatDuration(result.durationMs)})`);
+    if (verbose && result.stderr) {
+      log(`    stderr: ${result.stderr.slice(0, 500)}`);
+    }
     return null;
   }
 
@@ -160,6 +171,9 @@ async function runParticipantTurnWithRetry(
 
     const result = await runParticipantTurn(participant, prompt, cwd, verbose, onStdoutData);
     if (result) return result;
+
+    // Don't retry token limit errors — retrying won't help
+    if (participant.lastFailureWasTokenLimit) return null;
   }
 
   return null;
@@ -170,7 +184,7 @@ interface RoundEntryResult {
   durationMs: number;
 }
 
-function printRoundSummary(results: RoundEntryResult[], failedIds: Set<ParticipantId>) {
+function printRoundSummary(results: RoundEntryResult[], failedIds: Set<ParticipantId>, tokenLimitIds: Set<ParticipantId>) {
   log('');
   log('  ┌───────────┬──────────────────┬─────────┐');
   for (const { entry, durationMs } of results) {
@@ -182,7 +196,11 @@ function printRoundSummary(results: RoundEntryResult[], failedIds: Set<Participa
   }
   for (const pid of failedIds) {
     const name = pid.padEnd(9);
-    log(`  │ ${name} │ (failed)         │         │`);
+    if (tokenLimitIds.has(pid)) {
+      log(`  │ ${name} │ TOKEN LIMIT      │         │`);
+    } else {
+      log(`  │ ${name} │ (failed)         │         │`);
+    }
   }
   log('  └───────────┴──────────────────┴─────────┘');
 }
@@ -226,6 +244,9 @@ export async function orchestrate(
   // Track failed participants across rounds
   const failedParticipants = new Set<ParticipantId>();
 
+  // Track participants that hit token limit last round (they rejoin with fresh session)
+  const tokenLimitedLastRound = new Set<ParticipantId>();
+
   // Build session map for state persistence
   const sessionMap = new Map<ParticipantId, string | undefined>();
   for (const p of activeParticipants) {
@@ -262,7 +283,10 @@ export async function orchestrate(
   log('  Multi-AI Discussion');
   log('========================================');
   log(`  Topic: ${topic}`);
-  log(`  Participants: ${activeParticipants.map((p) => p.displayName()).join(', ')}`);
+  log('  Participants:');
+  for (const p of activeParticipants) {
+    log(`    ${p.displayName().padEnd(20)} — ${p.modelDisplay()}`);
+  }
   log(`  Max rounds: ${config.maxRounds}`);
   log(`  Mode: ${config.watch ? 'Interactive (--watch)' : 'Automated'}`);
   if (config.validateArtifacts) log('  Artifact validation: ON');
@@ -324,6 +348,12 @@ export async function orchestrate(
         prompt += `\n\n**Note:** The following participants have dropped out due to failures: ${failedList}. Continue the discussion with remaining participants.`;
       }
 
+      // Notify about participants rejoining after token limit
+      if (tokenLimitedLastRound.size > 0) {
+        const limitList = Array.from(tokenLimitedLastRound).join(', ');
+        prompt += `\n\n**Note:** ${limitList} hit their token limit last round and are rejoining with a fresh session. Brief context may help them catch up.`;
+      }
+
       participantPrompts.set(participant, prompt);
     }
 
@@ -370,6 +400,7 @@ export async function orchestrate(
     // Process results
     const roundResults: RoundEntryResult[] = [];
     const roundFailedIds = new Set<ParticipantId>();
+    const roundTokenLimitIds = new Set<ParticipantId>();
     const artifactErrors: string[] = [];
 
     for (const settled of results) {
@@ -382,9 +413,19 @@ export async function orchestrate(
       const { participant, result } = settled.value;
 
       if (!result) {
-        if (!useStreaming) log(`  [${participant.id}] Failed all retries`);
         roundFailedIds.add(participant.id);
-        failedParticipants.add(participant.id);
+
+        if (participant.lastFailureWasTokenLimit) {
+          // Token limit: reset session so they rejoin next round fresh
+          roundTokenLimitIds.add(participant.id);
+          participant.resetSession();
+          log('');
+          log(`  WARNING: [${participant.id}] hit token/context limit — session reset, will rejoin next round`);
+        } else {
+          // Permanent failure
+          if (!useStreaming) log(`  [${participant.id}] Failed all retries`);
+          failedParticipants.add(participant.id);
+        }
         continue;
       }
 
@@ -440,7 +481,13 @@ export async function orchestrate(
     }
 
     // Print round summary table
-    printRoundSummary(roundResults, roundFailedIds);
+    printRoundSummary(roundResults, roundFailedIds, roundTokenLimitIds);
+
+    // Update token-limited tracking for next round's prompt injection
+    tokenLimitedLastRound.clear();
+    for (const pid of roundTokenLimitIds) {
+      tokenLimitedLastRound.add(pid);
+    }
 
     // Check consensus
     state.consensusStatus = detectConsensus(state, config.consensusThreshold);

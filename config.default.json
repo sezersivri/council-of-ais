@@ -10,6 +10,7 @@
       "id": "claude",
       "enabled": true,
       "cliPath": "claude",
+      "model": "claude-opus-4-6",
       "timeoutMs": 120000,
       "maxRetries": 1,
       "extraArgs": []
@@ -18,6 +19,7 @@
       "id": "codex",
       "enabled": true,
       "cliPath": "codex",
+      "model": "gpt-5.3-codex",
       "timeoutMs": 120000,
       "maxRetries": 1,
       "extraArgs": []
@@ -26,6 +28,7 @@
       "id": "gemini",
       "enabled": true,
       "cliPath": "gemini",
+      "model": "gemini-3.1-pro-preview",
       "timeoutMs": 120000,
       "maxRetries": 1,
       "extraArgs": []

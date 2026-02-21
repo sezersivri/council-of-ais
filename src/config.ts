@@ -16,11 +16,18 @@ interface CliOverrides {
   stream?: boolean;
 }
 
+export const RECOMMENDED_MODELS: Record<ParticipantId, string> = {
+  claude: 'claude-opus-4-6',
+  codex: 'gpt-5.3-codex',
+  gemini: 'gemini-3.1-pro-preview',
+};
+
 const DEFAULT_PARTICIPANTS: Record<ParticipantId, ParticipantConfig> = {
   claude: {
     id: 'claude',
     enabled: true,
     cliPath: 'claude',
+    model: RECOMMENDED_MODELS.claude,
     timeoutMs: 120000,
     extraArgs: [],
   },
@@ -28,6 +35,7 @@ const DEFAULT_PARTICIPANTS: Record<ParticipantId, ParticipantConfig> = {
     id: 'codex',
     enabled: true,
     cliPath: 'codex',
+    model: RECOMMENDED_MODELS.codex,
     timeoutMs: 120000,
     extraArgs: [],
   },
@@ -35,6 +43,7 @@ const DEFAULT_PARTICIPANTS: Record<ParticipantId, ParticipantConfig> = {
     id: 'gemini',
     enabled: true,
     cliPath: 'gemini',
+    model: RECOMMENDED_MODELS.gemini,
     timeoutMs: 120000,
     extraArgs: [],
   },
