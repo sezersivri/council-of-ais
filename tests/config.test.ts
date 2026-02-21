@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { writeFileSync, rmSync } from 'node:fs';
 import { loadConfig } from '../src/config.js';
 
@@ -36,7 +36,7 @@ describe('loadConfig', () => {
       const config = loadConfig(path, {});
       assert.equal(config.maxRounds, 7);
       assert.equal(config.consensusThreshold, 2);
-      assert.equal(config.outputDir, './custom-output');
+      assert.equal(config.outputDir, resolve(process.cwd(), './custom-output'));
     } finally {
       try { rmSync(path); } catch { /* ignore */ }
     }

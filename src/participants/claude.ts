@@ -1,5 +1,6 @@
 import { writeFileSync, unlinkSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
+import { randomBytes } from 'crypto';
 import { BaseParticipant } from './base.js';
 import { ProcessResult, ParticipantOutput } from '../types.js';
 import { stripAnsi } from '../process-runner.js';
@@ -20,7 +21,7 @@ export class ClaudeParticipant extends BaseParticipant {
   private writeTempPrompt(prompt: string): string {
     const tmpDir = join(process.cwd(), '.multi-ai-tmp');
     if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
-    const file = join(tmpDir, `claude-prompt-${Date.now()}.txt`);
+    const file = join(tmpDir, `claude-prompt-${randomBytes(8).toString('hex')}.txt`);
     writeFileSync(file, prompt, 'utf-8');
     return file;
   }

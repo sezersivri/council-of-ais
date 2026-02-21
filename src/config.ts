@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { MultiAiConfig, ParticipantConfig, ParticipantId } from './types.js';
+import { MultiAiConfig, ParticipantConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_PATH = join(__dirname, '..', 'config.default.json');
@@ -9,7 +9,7 @@ const CWD_CONFIG_NAME = 'multi-ai.json';
 
 interface CliOverrides {
   maxRounds?: number;
-  participants?: ParticipantId[];
+  participants?: string[];
   outputFile?: string;
   verbose?: boolean;
   watch?: boolean;
@@ -23,13 +23,13 @@ interface CliOverrides {
   skipPreflight?: boolean;
 }
 
-export const RECOMMENDED_MODELS: Record<ParticipantId, string> = {
+export const RECOMMENDED_MODELS: Record<string, string> = {
   claude: 'claude-opus-4-6',
   codex: 'gpt-5.3-codex',
   gemini: 'gemini-3-pro-preview',
 };
 
-const DEFAULT_PARTICIPANTS: Record<ParticipantId, ParticipantConfig> = {
+const DEFAULT_PARTICIPANTS: Record<string, ParticipantConfig> = {
   claude: {
     id: 'claude',
     enabled: true,
@@ -56,6 +56,40 @@ const DEFAULT_PARTICIPANTS: Record<ParticipantId, ParticipantConfig> = {
   },
 };
 
+/**
+ * Resolve a user-supplied path against `base` (CWD) and reject obvious
+ * directory-traversal attacks. Paths that escape above the grandparent of
+ * `base` are clamped to `<base>/output`. This allows sibling-project paths
+ * like `../reports` while blocking `../../../../etc/hosts`.
+ */
+function safeResolvePath(base: string, userPath: string): string {
+  const resolved = resolve(base, userPath);
+  // Allow anything at or below the grandparent of CWD (two levels up).
+  const cwdGrandparent = resolve(base, '../..');
+  if (!resolved.startsWith(cwdGrandparent)) {
+    return resolve(base, 'output');
+  }
+  return resolved;
+}
+
+/**
+ * Clamp numeric config fields to safe ranges so that a malformed or
+ * adversarial config cannot cause zero-round or near-infinite loops.
+ */
+function validateConfig(config: MultiAiConfig): void {
+  if (!Number.isFinite(config.maxRounds) || config.maxRounds < 1) {
+    config.maxRounds = 5;
+  }
+  config.maxRounds = Math.min(Math.max(Math.round(config.maxRounds), 1), 50);
+
+  for (const p of config.participants) {
+    if (!Number.isFinite(p.timeoutMs) || p.timeoutMs < 5000) {
+      p.timeoutMs = 120000;
+    }
+    p.timeoutMs = Math.min(p.timeoutMs, 600000);
+  }
+}
+
 export function loadConfig(configPath: string | undefined, overrides: CliOverrides): MultiAiConfig {
   let rawConfig: Record<string, unknown> = {};
 
@@ -76,9 +110,14 @@ export function loadConfig(configPath: string | undefined, overrides: CliOverrid
   // --ci is a convenience alias: sets jsonReport default, enforces exit codes
   const isCi = overrides.ci ?? (rawConfig.ci as boolean) ?? false;
 
-  return {
+  const cwd = process.cwd();
+
+  const rawOutputDir = (rawConfig.outputDir as string) ?? './output';
+  const rawJsonReport = overrides.jsonReport ?? (rawConfig.jsonReport as string | undefined) ?? (isCi ? './result.json' : undefined);
+
+  const result: MultiAiConfig = {
     maxRounds: overrides.maxRounds ?? (rawConfig.maxRounds as number) ?? 5,
-    outputDir: (rawConfig.outputDir as string) ?? './output',
+    outputDir: safeResolvePath(cwd, rawOutputDir),
     outputFile: overrides.outputFile ?? (rawConfig.outputFile as string) ?? 'discussion.md',
     consensusThreshold: (rawConfig.consensusThreshold as number) ?? 1,
     verbose: overrides.verbose ?? (rawConfig.verbose as boolean) ?? false,
@@ -87,30 +126,37 @@ export function loadConfig(configPath: string | undefined, overrides: CliOverrid
     stream: overrides.stream ?? false,
     dryRun: overrides.dryRun ?? false,
     debug: overrides.debug ?? (rawConfig.debug as boolean) ?? false,
-    jsonReport: overrides.jsonReport ?? (rawConfig.jsonReport as string | undefined) ?? (isCi ? './result.json' : undefined),
+    jsonReport: rawJsonReport !== undefined ? safeResolvePath(cwd, rawJsonReport) : undefined,
     ci: isCi,
     projectGuidance: overrides.projectGuidance ?? (rawConfig.guidance as string | undefined),
     skipPreflight: overrides.skipPreflight ?? false,
     participants: buildParticipantConfigs(configParticipants, overrides.participants),
   };
+
+  validateConfig(result);
+  return result;
 }
 
 function buildParticipantConfigs(
   configParticipants: ParticipantConfig[] | undefined,
-  activeIds: ParticipantId[] | undefined,
+  activeIds: string[] | undefined,
 ): ParticipantConfig[] {
-  const merged = { ...DEFAULT_PARTICIPANTS };
+  const merged: Record<string, ParticipantConfig> = { ...DEFAULT_PARTICIPANTS };
 
   if (configParticipants) {
     for (const cp of configParticipants) {
       if (merged[cp.id]) {
+        // Override a built-in participant's settings
         merged[cp.id] = { ...merged[cp.id], ...cp };
+      } else {
+        // New participant (generic or otherwise) — add with sensible defaults
+        merged[cp.id] = { ...cp, timeoutMs: cp.timeoutMs ?? 120000, enabled: cp.enabled ?? true };
       }
     }
   }
 
   if (activeIds) {
-    for (const id of Object.keys(merged) as ParticipantId[]) {
+    for (const id of Object.keys(merged)) {
       merged[id].enabled = activeIds.includes(id);
     }
   }

@@ -29,8 +29,14 @@ export async function runCliProcess(
     }
 
     // On Windows, npm global shims are .cmd files that require a shell to execute.
+    // Quote every argument so cmd.exe metacharacters (;, &&, |, >, etc.) in
+    // extraArgs from config cannot be interpreted as shell commands.
     // On Unix, we skip the shell to avoid command injection and quoting bugs.
-    const proc = spawn(command, args, {
+    const spawnArgs = process.platform === 'win32'
+      ? args.map((a) => `"${a.replace(/"/g, '\\"')}"`)
+      : args;
+
+    const proc = spawn(command, spawnArgs, {
       cwd: options.cwd,
       shell: process.platform === 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -103,5 +109,13 @@ export async function runCliProcess(
 
 export function stripAnsi(str: string): string {
   // eslint-disable-next-line no-control-regex
-  return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+  return str
+    // CSI sequences: ESC [ ... final-byte (covers SGR, cursor move, erase, etc.)
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+    // OSC sequences: ESC ] ... BEL or ST (window title, hyperlinks, etc.)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    // Other ESC sequences: ESC followed by a single non-[ non-] character
+    .replace(/\x1b[^[\]]/g, '')
+    // Standalone control characters (except \n, \r, \t)
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 }

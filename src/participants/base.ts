@@ -34,12 +34,16 @@ export abstract class BaseParticipant {
   }
 
   displayName(): string {
-    const names: Record<ParticipantId, string> = {
+    const names: Record<string, string> = {
       claude: 'Claude (Anthropic)',
       codex: 'Codex (OpenAI)',
       gemini: 'Gemini (Google)',
     };
-    return names[this.config.id];
+    return names[this.config.id] ?? this.config.id;
+  }
+
+  isStateless(): boolean {
+    return false;
   }
 
   modelDisplay(): string {

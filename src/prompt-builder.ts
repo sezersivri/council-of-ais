@@ -7,11 +7,15 @@ import { getLatestEntriesPerParticipant } from './discussion.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = join(__dirname, '..', 'templates');
 
-const PARTICIPANT_NAMES: Record<ParticipantId, string> = {
+const BUILTIN_NAMES: Record<string, string> = {
   claude: 'Claude (Anthropic)',
   codex: 'Codex (OpenAI)',
   gemini: 'Gemini (Google)',
 };
+
+function getParticipantName(id: ParticipantId): string {
+  return BUILTIN_NAMES[id] ?? id;
+}
 
 export function buildInitialPrompt(
   topic: string,
@@ -27,7 +31,7 @@ export function buildInitialPrompt(
     : '';
 
   return template
-    .replace(/\{\{PARTICIPANT_NAME\}\}/g, PARTICIPANT_NAMES[participantId])
+    .replace(/\{\{PARTICIPANT_NAME\}\}/g, getParticipantName(participantId))
     .replace(/\{\{TOPIC\}\}/g, topic)
     .replace(/\{\{ROLE\}\}/g, roleText)
     .replace(/\{\{ROUND_NUMBER\}\}/g, String(roundNumber))
@@ -119,7 +123,7 @@ export function buildRoundPrompt(
 function formatEntryForDelta(pid: ParticipantId, entry: DiscussionEntry): string {
   if (entry.parsedSections) {
     const s = entry.parsedSections;
-    const parts: string[] = [`### ${PARTICIPANT_NAMES[pid]}:`];
+    const parts: string[] = [`### ${getParticipantName(pid)}:`];
 
     // New format: substance field; old format: proposal || analysis
     const content = s.substance || s.proposal || s.analysis;
@@ -144,7 +148,7 @@ function formatEntryForDelta(pid: ParticipantId, entry: DiscussionEntry): string
   }
 
   // Fallback to raw response if parsing failed
-  return `### ${PARTICIPANT_NAMES[pid]}:\n\n${entry.rawResponse}`;
+  return `### ${getParticipantName(pid)}:\n\n${entry.rawResponse}`;
 }
 
 export function buildTieBreakerLeadPrompt(
@@ -216,9 +220,59 @@ export function buildTieBreakerFollowPrompt(
     : '';
 
   return template
-    .replace(/\{\{LEAD_NAME\}\}/g, PARTICIPANT_NAMES[leadId])
+    .replace(/\{\{LEAD_NAME\}\}/g, getParticipantName(leadId))
     .replace(/\{\{LEAD_RESPONSE\}\}/g, leadResponseText)
     .replace(/\{\{OTHER_RESPONSES_SECTION\}\}/g, otherResponsesSection + (guidanceText ? '\n\n' + guidanceText : ''));
+}
+
+/**
+ * Build a round prompt for stateless participants.
+ * Prepends full context (topic + consensus status + compressed history + delta)
+ * so the participant can respond meaningfully without any session memory.
+ */
+export function buildStatelessRoundPrompt(
+  state: DiscussionState,
+  participantId: ParticipantId,
+  roundNumber: number,
+  maxRounds: number,
+  userGuidance?: string,
+): string {
+  // Compress previous rounds into one line each
+  const historyLines: string[] = [];
+  for (let r = 1; r < roundNumber; r++) {
+    const roundEntries = state.entries.filter((e) => e.round === r);
+    if (roundEntries.length === 0) continue;
+    const summaries = roundEntries.map((e) => {
+      const substance =
+        e.parsedSections?.substance ||
+        e.parsedSections?.proposal ||
+        e.rawResponse.slice(0, 200);
+      return `${e.participant.toUpperCase()}: ${substance.slice(0, 150).replace(/\n+/g, ' ')}`;
+    });
+    historyLines.push(`**Round ${r}:** ${summaries.join(' | ')}`);
+  }
+  const historyText =
+    historyLines.length > 0 ? historyLines.join('\n') : '*No previous rounds.*';
+
+  // Build the standard delta prompt (what others said last round)
+  const deltaPrompt = buildRoundPrompt(state, participantId, roundNumber, maxRounds, userGuidance);
+
+  const contextHeader = [
+    '## Full Discussion Context',
+    '*(You have no session memory — this block contains everything you need.)*',
+    '',
+    `**Topic:** ${state.topic}`,
+    `**Round:** ${roundNumber} of ${maxRounds}`,
+    `**Consensus Status:** ${state.consensusStatus}`,
+    '',
+    '**Discussion History:**',
+    historyText,
+    '',
+    '---',
+    '',
+  ].join('\n');
+
+  return contextHeader + deltaPrompt;
 }
 
 export function buildFinalSummaryPrompt(state: DiscussionState): string {

@@ -5,7 +5,6 @@ import { Command } from 'commander';
 import { loadConfig } from './config.js';
 import { runDiscussion } from './orchestrator.js';
 import { replay } from './replay.js';
-import { ParticipantId } from './types.js';
 
 const program = new Command();
 
@@ -18,7 +17,7 @@ program
   .option('-r, --rounds <number>', 'Maximum number of discussion rounds', '5')
   .option(
     '-p, --participants <list>',
-    'Comma-separated list of participants (claude,codex,gemini)',
+    'Comma-separated list of participant IDs (built-ins: claude,codex,gemini; or IDs from multi-ai.json)',
     'claude,codex,gemini',
   )
   .option('-o, --output <file>', 'Output file name', 'discussion.md')
@@ -62,12 +61,12 @@ program
 
       const participantIds = (options.participants as string)
         .split(',')
-        .map((p: string) => p.trim().toLowerCase() as ParticipantId)
-        .filter((p: ParticipantId) => ['claude', 'codex', 'gemini'].includes(p));
+        .map((p: string) => p.trim().toLowerCase())
+        .filter(Boolean);
 
       if (participantIds.length < 2) {
-        console.error('Error: At least 2 participants are required.');
-        console.error('Available: claude, codex, gemini');
+        console.error('Error: At least 2 participant IDs are required.');
+        console.error('Built-ins: claude, codex, gemini. Custom: add entries in multi-ai.json.');
         process.exit(2);
       }
 

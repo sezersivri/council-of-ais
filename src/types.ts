@@ -1,4 +1,4 @@
-export type ParticipantId = 'claude' | 'codex' | 'gemini';
+export type ParticipantId = string;
 
 export type ConsensusStatus = 'emerging' | 'partial' | 'full' | 'disagreement';
 
@@ -40,17 +40,51 @@ export interface DiscussionState {
   finalPlan: string | null;
 }
 
+export interface StdinBodyConfig {
+  /** Base JSON object — deep-cloned each round. e.g. {"model":"llama3","stream":false} */
+  template: Record<string, unknown>;
+  /** Field name where the prompt string is injected. e.g. "prompt" */
+  promptField: string;
+  /** Field name where extracted session state is injected on continue rounds. e.g. "context" */
+  stateField?: string;
+}
+
+export interface GenericSessionConfig {
+  /** Regex with one capture group to extract string session ID from stdout */
+  extractPattern?: string;   // was required, now optional
+  /** Args to append on continue invocations; use {sessionId} as placeholder */
+  continueArgs?: string[];   // was required, now optional
+  /** JSON field name to extract from response as complex session state (e.g. Ollama context array) */
+  extractField?: string;
+}
+
 export interface ParticipantConfig {
   id: ParticipantId;
+  /** 'generic' opts into GenericParticipant; omit for built-in adapters */
+  type?: 'generic';
   enabled: boolean;
+  /** Command to run (e.g. 'ollama', 'curl'). For generics this is the executable. */
   cliPath: string;
   model?: string;
   timeoutMs: number;
   systemPrompt?: string;
+  /** Base arguments appended before the prompt (for generic type) */
   extraArgs?: string[];
   role?: string;
   lead?: boolean;
   maxRetries?: number;
+  /** Generic only: how to deliver the prompt to the process */
+  inputMode?: 'stdin' | 'arg';
+  /** Generic only: explicit flag name for arg mode (e.g. '--prompt') */
+  promptArg?: string;
+  /** Generic only: opt-in session state; omit for stateless (default) */
+  session?: GenericSessionConfig;
+  /** Generic only: parse stdout as JSON and extract this field as the response */
+  jsonField?: string;
+  /** Generic only: additional env vars for the subprocess */
+  genericEnv?: Record<string, string>;
+  /** Generic only: structured JSON body for stdin-mode tools (e.g. Ollama REST via curl) */
+  stdinBody?: StdinBodyConfig;
 }
 
 export interface MultiAiConfig {

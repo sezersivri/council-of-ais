@@ -21,7 +21,7 @@ import {
   extractActionItems,
 } from './discussion.js';
 import {
-  buildInitialPrompt, buildRoundPrompt, buildFinalSummaryPrompt,
+  buildInitialPrompt, buildRoundPrompt, buildStatelessRoundPrompt, buildFinalSummaryPrompt,
   buildTieBreakerLeadPrompt, buildTieBreakerFollowPrompt,
 } from './prompt-builder.js';
 import { parseResponseSections, extractCodeArtifact, detectConsensus } from './consensus.js';
@@ -411,6 +411,9 @@ export async function runDiscussionWithParticipants(
         prompt = buildTieBreakerLeadPrompt(state, participant.id, round, config.maxRounds, userGuidance);
       } else if (tieBreakerPhase === 'others-respond' && leadParticipant && participant.id !== leadParticipant.id) {
         prompt = buildTieBreakerFollowPrompt(state, participant.id, leadParticipant.id, round, config.maxRounds, userGuidance);
+      } else if (participant.isStateless() && round > 1) {
+        debugLog(config, 'STATELESS_INJECT', `${participant.id} is stateless — building full-context prompt`);
+        prompt = buildStatelessRoundPrompt(state, participant.id, round, config.maxRounds, userGuidance);
       } else {
         const isFreshSession = !participant.sessionStarted && round > 1;
         if (isFreshSession) {

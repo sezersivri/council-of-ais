@@ -3,6 +3,7 @@ import { ProcessResult, ParticipantOutput } from '../types.js';
 import { stripAnsi } from '../process-runner.js';
 import { writeFileSync, unlinkSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
+import { randomBytes } from 'crypto';
 
 export class CodexParticipant extends BaseParticipant {
   private promptFile: string | null = null;
@@ -25,7 +26,7 @@ export class CodexParticipant extends BaseParticipant {
     // and use shell redirection to pass it
     const tmpDir = join(process.cwd(), '.multi-ai-tmp');
     if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
-    this.promptFile = join(tmpDir, `codex-prompt-${Date.now()}.txt`);
+    this.promptFile = join(tmpDir, `codex-prompt-${randomBytes(8).toString('hex')}.txt`);
     writeFileSync(this.promptFile, prompt, 'utf-8');
 
     const args = [
