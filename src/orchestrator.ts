@@ -9,13 +9,65 @@ import {
   ParticipantId,
 } from './types.js';
 import { initializeDiscussion, appendEntry, appendFinalPlan, saveStateJson } from './discussion.js';
-import { buildInitialPrompt, buildRoundPrompt, buildFinalSummaryPrompt } from './prompt-builder.js';
-import { parseResponseSections, detectConsensus } from './consensus.js';
+import {
+  buildInitialPrompt, buildRoundPrompt, buildFinalSummaryPrompt,
+  buildTieBreakerLeadPrompt, buildTieBreakerFollowPrompt,
+} from './prompt-builder.js';
+import { parseResponseSections, extractCodeArtifact, detectConsensus } from './consensus.js';
 import { runCliProcess } from './process-runner.js';
 import { createParticipant, BaseParticipant } from './participants/index.js';
+import { validateArtifact } from './artifact-validator.js';
+import { StreamDisplay } from './stream-display.js';
 
 function log(msg: string) {
   process.stdout.write(msg + '\n');
+}
+
+async function runPreflightChecks(
+  participants: BaseParticipant[],
+): Promise<void> {
+  log('Preflight checks...');
+
+  const results = await Promise.allSettled(
+    participants.map(async (p) => {
+      const cliPath = p.config.cliPath || p.id;
+      const result = await runCliProcess(cliPath, ['--version'], {
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+      });
+      return { participant: p, result, cliPath };
+    }),
+  );
+
+  const failures: string[] = [];
+
+  for (const settled of results) {
+    if (settled.status === 'rejected') {
+      failures.push(`  Unknown error: ${settled.reason}`);
+      continue;
+    }
+
+    const { participant, result, cliPath } = settled.value;
+    if (result.exitCode === 0 || result.stdout.trim()) {
+      const version = result.stdout.trim().split('\n')[0].slice(0, 60);
+      log(`  [${participant.id}] OK — ${version}`);
+    } else {
+      log(`  [${participant.id}] FAILED`);
+      failures.push(
+        `  ${participant.id}: '${cliPath}' not found or not authenticated.\n` +
+        `    Install: see README or run '${cliPath} --help'`,
+      );
+    }
+  }
+
+  if (failures.length > 0) {
+    log('');
+    throw new Error(
+      `Preflight failed for ${failures.length} participant(s):\n${failures.join('\n')}`,
+    );
+  }
+
+  log('');
 }
 
 function formatDuration(ms: number): string {
@@ -46,6 +98,7 @@ async function runParticipantTurn(
   prompt: string,
   cwd: string,
   verbose: boolean,
+  onStdoutData?: (chunk: string) => void,
 ): Promise<{ response: string; durationMs: number } | null> {
   const { command, args, stdinData, env } = participant.buildCommand(prompt);
 
@@ -58,6 +111,7 @@ async function runParticipantTurn(
     timeoutMs: participant.timeout,
     stdinData,
     env,
+    onStdoutData,
   });
 
   if (result.timedOut) {
@@ -93,6 +147,7 @@ async function runParticipantTurnWithRetry(
   prompt: string,
   cwd: string,
   verbose: boolean,
+  onStdoutData?: (chunk: string) => void,
 ): Promise<{ response: string; durationMs: number } | null> {
   const maxRetries = participant.config.maxRetries ?? 1;
 
@@ -103,7 +158,7 @@ async function runParticipantTurnWithRetry(
       await sleep(delayMs);
     }
 
-    const result = await runParticipantTurn(participant, prompt, cwd, verbose);
+    const result = await runParticipantTurn(participant, prompt, cwd, verbose, onStdoutData);
     if (result) return result;
   }
 
@@ -160,6 +215,9 @@ export async function orchestrate(
     throw new Error('At least 2 participants are required for a discussion');
   }
 
+  // Pre-flight: verify all CLIs are available before starting
+  await runPreflightChecks(activeParticipants);
+
   const participantIds = activeParticipants.map((p) => p.id);
 
   // Initialize discussion file
@@ -207,9 +265,20 @@ export async function orchestrate(
   log(`  Participants: ${activeParticipants.map((p) => p.displayName()).join(', ')}`);
   log(`  Max rounds: ${config.maxRounds}`);
   log(`  Mode: ${config.watch ? 'Interactive (--watch)' : 'Automated'}`);
+  if (config.validateArtifacts) log('  Artifact validation: ON');
+  if (config.stream) log('  Streaming display: ON');
   log(`  Output: ${outputPath}`);
   log('========================================');
   log('');
+
+  // Tie-breaker state
+  const leadParticipant = activeParticipants.find((p) => p.config.lead);
+  let tieBreakerPhase: 'inactive' | 'lead-proposes' | 'others-respond' = 'inactive';
+
+  if (leadParticipant) {
+    log(`  Lead Architect: ${leadParticipant.displayName()}`);
+    log('');
+  }
 
   let consensusReached = false;
   let userGuidance: string | undefined;
@@ -232,6 +301,7 @@ export async function orchestrate(
     const participantPrompts = new Map<BaseParticipant, string>();
     for (const participant of roundParticipants) {
       let prompt: string;
+
       if (round === 1) {
         prompt = buildInitialPrompt(
           topic,
@@ -240,6 +310,10 @@ export async function orchestrate(
           config.maxRounds,
           participant.config.role,
         );
+      } else if (tieBreakerPhase === 'lead-proposes' && leadParticipant && participant.id === leadParticipant.id) {
+        prompt = buildTieBreakerLeadPrompt(state, participant.id, round, config.maxRounds, userGuidance);
+      } else if (tieBreakerPhase === 'others-respond' && leadParticipant && participant.id !== leadParticipant.id) {
+        prompt = buildTieBreakerFollowPrompt(state, participant.id, leadParticipant.id, round, config.maxRounds, userGuidance);
       } else {
         prompt = buildRoundPrompt(state, participant.id, round, config.maxRounds, userGuidance);
       }
@@ -253,28 +327,50 @@ export async function orchestrate(
       participantPrompts.set(participant, prompt);
     }
 
-    // Log that all are starting (parallel execution)
-    for (const participant of roundParticipants) {
-      log(`  [${participant.id}] Thinking...`);
+    // Streaming display or simple log
+    const useStreaming = config.stream && process.stdout.isTTY;
+    let streamDisplay: StreamDisplay | undefined;
+
+    if (useStreaming) {
+      streamDisplay = new StreamDisplay(roundParticipants.map((p) => p.id));
+      streamDisplay.start();
+    } else {
+      for (const participant of roundParticipants) {
+        log(`  [${participant.id}] Thinking...`);
+      }
     }
 
     // Run all participants in parallel
     const results = await Promise.allSettled(
       roundParticipants.map(async (participant) => {
         const prompt = participantPrompts.get(participant)!;
+        const onData = streamDisplay
+          ? (chunk: string) => streamDisplay!.onData(participant.id, chunk)
+          : undefined;
         const result = await runParticipantTurnWithRetry(
           participant,
           prompt,
           process.cwd(),
           config.verbose,
+          onData,
         );
+        if (streamDisplay) {
+          if (result) {
+            streamDisplay.onDone(participant.id);
+          } else {
+            streamDisplay.onFailed(participant.id);
+          }
+        }
         return { participant, result };
       }),
     );
 
+    streamDisplay?.stop();
+
     // Process results
     const roundResults: RoundEntryResult[] = [];
     const roundFailedIds = new Set<ParticipantId>();
+    const artifactErrors: string[] = [];
 
     for (const settled of results) {
       if (settled.status === 'rejected') {
@@ -286,7 +382,7 @@ export async function orchestrate(
       const { participant, result } = settled.value;
 
       if (!result) {
-        log(`  [${participant.id}] Failed all retries`);
+        if (!useStreaming) log(`  [${participant.id}] Failed all retries`);
         roundFailedIds.add(participant.id);
         failedParticipants.add(participant.id);
         continue;
@@ -307,14 +403,41 @@ export async function orchestrate(
       appendEntry(outputPath, state, entry);
       roundResults.push({ entry, durationMs: result.durationMs });
 
-      log(`  [${participant.id}] Done (${formatDuration(result.durationMs)}) — Signal: ${signal}`);
+      if (!useStreaming) {
+        log(`  [${participant.id}] Done (${formatDuration(result.durationMs)}) — Signal: ${signal}`);
+      }
+
+      // Artifact validation (opt-in via --validate-artifacts)
+      if (config.validateArtifacts) {
+        const artifact = extractCodeArtifact(result.response);
+        if (artifact) {
+          log(`  [${participant.id}] Validating code artifact (${artifact.language})...`);
+          try {
+            const error = await validateArtifact(artifact.code, artifact.language, participant.id);
+            if (error) {
+              log(`  [${participant.id}] Artifact FAILED validation`);
+              artifactErrors.push(`[${participant.id}] Artifact validation failed:\n${error}`);
+            } else {
+              log(`  [${participant.id}] Artifact passed validation`);
+            }
+          } catch {
+            // Validation tool not available — skip silently
+          }
+        }
+      }
 
       // Update session map
       sessionMap.set(participant.id, participant.sessionId);
     }
 
-    // Clear user guidance after it's been used
-    userGuidance = undefined;
+    // Inject artifact errors as system guidance for the next round
+    if (artifactErrors.length > 0) {
+      const errorGuidance = '**System: Artifact Validation Errors:**\n' + artifactErrors.join('\n\n');
+      userGuidance = userGuidance ? userGuidance + '\n\n' + errorGuidance : errorGuidance;
+    } else {
+      // Clear user guidance after it's been used (only if no artifact errors to carry forward)
+      userGuidance = undefined;
+    }
 
     // Print round summary table
     printRoundSummary(roundResults, roundFailedIds);
@@ -336,6 +459,30 @@ export async function orchestrate(
       log('  *** CONSENSUS REACHED ***');
       consensusReached = true;
       break;
+    }
+
+    // Tie-breaker phase transitions
+    if (tieBreakerPhase === 'lead-proposes') {
+      tieBreakerPhase = 'others-respond';
+      log('  Tie-breaker: others will respond to the Lead\'s proposal next round.');
+    } else if (tieBreakerPhase === 'others-respond') {
+      tieBreakerPhase = 'inactive';
+    } else if (
+      leadParticipant &&
+      round >= 2 &&
+      (state.consensusStatus === 'disagreement' || state.consensusStatus === 'emerging')
+    ) {
+      tieBreakerPhase = 'lead-proposes';
+      log('');
+      log('  *** TIE-BREAKER ACTIVATED ***');
+      log(`  ${leadParticipant.displayName()} will issue a final compromise next round.`);
+    } else if (
+      !leadParticipant &&
+      round >= 3 &&
+      state.consensusStatus === 'disagreement'
+    ) {
+      log('');
+      log('  Tip: Configure a participant with "lead": true in config for tie-breaker rounds.');
     }
 
     // Watch mode: pause between rounds

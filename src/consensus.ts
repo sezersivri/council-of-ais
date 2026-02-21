@@ -1,12 +1,26 @@
 import { DiscussionState, ConsensusStatus, ResponseSections, ConsensusSignal, ParticipantId } from './types.js';
 
+/**
+ * Build a regex that matches a section header in multiple formats LLMs may use:
+ * - #{1,6} heading levels (##, ###, ####, etc.)
+ * - **Bold** style headers
+ * - Optional trailing colon
+ * - Optional newline after header
+ */
+function sectionRegex(name: string): RegExp {
+  return new RegExp(
+    `(?:#{1,6}\\s*${name}|\\*\\*${name}\\*\\*)\\s*:?[ \\t]*\\n?([\\s\\S]*?)(?=#{1,6}\\s|\\*\\*(?:Analysis|Points|Proposal|Consensus)\\b|$)`,
+    'i',
+  );
+}
+
 export function parseResponseSections(rawResponse: string): ResponseSections | null {
   try {
-    const analysisMatch = rawResponse.match(/###\s*Analysis\s*\n([\s\S]*?)(?=###|$)/i);
-    const agreeMatch = rawResponse.match(/###\s*Points of Agreement\s*\n([\s\S]*?)(?=###|$)/i);
-    const disagreeMatch = rawResponse.match(/###\s*Points of Disagreement\s*\n([\s\S]*?)(?=###|$)/i);
-    const proposalMatch = rawResponse.match(/###\s*Proposal\s*\n([\s\S]*?)(?=###|$)/i);
-    const signalMatch = rawResponse.match(/###\s*Consensus Signal\s*\n([\s\S]*?)(?=###|$)/i);
+    const analysisMatch = rawResponse.match(sectionRegex('Analysis'));
+    const agreeMatch = rawResponse.match(sectionRegex('Points of Agreement'));
+    const disagreeMatch = rawResponse.match(sectionRegex('Points of Disagreement'));
+    const proposalMatch = rawResponse.match(sectionRegex('Proposal'));
+    const signalMatch = rawResponse.match(sectionRegex('Consensus Signal'));
 
     const signalText = signalMatch?.[1]?.trim() || '';
     let consensusSignal: ConsensusSignal = 'DISAGREE';
@@ -36,6 +50,20 @@ export function parseResponseSections(rawResponse: string): ResponseSections | n
   } catch {
     return null;
   }
+}
+
+/**
+ * Extract a fenced code block from a "Code Artifact" section in the response.
+ * Returns the code and detected language, or null if no artifact found.
+ */
+export function extractCodeArtifact(rawResponse: string): { code: string; language: string } | null {
+  const match = rawResponse.match(
+    /(?:#{1,6}\s*Code Artifact|\*\*Code Artifact\*\*)\s*:?\s*\n[\s\S]*?```(\w*)\n([\s\S]*?)```/i,
+  );
+  if (!match) return null;
+  const language = match[1] || 'typescript';
+  const code = match[2]?.trim();
+  return code ? { code, language } : null;
 }
 
 export function detectConsensus(

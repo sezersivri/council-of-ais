@@ -9,6 +9,7 @@ export async function runCliProcess(
     timeoutMs: number;
     stdinData?: string;
     env?: Record<string, string | undefined>;
+    onStdoutData?: (chunk: string) => void;
   },
 ): Promise<ProcessResult> {
   const startTime = Date.now();
@@ -39,7 +40,9 @@ export async function runCliProcess(
     let timedOut = false;
 
     proc.stdout.on('data', (data: Buffer) => {
-      stdout += data.toString();
+      const chunk = data.toString();
+      stdout += chunk;
+      options.onStdoutData?.(chunk);
     });
 
     proc.stderr.on('data', (data: Buffer) => {

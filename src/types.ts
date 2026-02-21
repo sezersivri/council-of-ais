@@ -38,6 +38,7 @@ export interface ParticipantConfig {
   systemPrompt?: string;
   extraArgs?: string[];
   role?: string;
+  lead?: boolean;
   maxRetries?: number;
 }
 
@@ -49,6 +50,8 @@ export interface MultiAiConfig {
   consensusThreshold: number;
   verbose: boolean;
   watch: boolean;
+  validateArtifacts: boolean;
+  stream: boolean;
 }
 
 export interface ProcessResult {

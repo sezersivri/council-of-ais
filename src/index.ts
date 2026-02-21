@@ -22,6 +22,8 @@ program
   .option('-c, --config <path>', 'Path to config file')
   .option('-w, --watch', 'Interactive mode: pause between rounds for user input', false)
   .option('-v, --verbose', 'Enable verbose output', false)
+  .option('--validate-artifacts', 'Validate code artifacts in AI responses', false)
+  .option('--stream', 'Show live streaming progress for each participant', false)
   .action(async (topic: string, options) => {
     try {
       const participantIds = (options.participants as string)
@@ -41,6 +43,8 @@ program
         outputFile: options.output,
         verbose: options.verbose,
         watch: options.watch,
+        validateArtifacts: options.validateArtifacts,
+        stream: options.stream,
       });
 
       await orchestrate(topic, config);

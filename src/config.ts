@@ -12,6 +12,8 @@ interface CliOverrides {
   outputFile?: string;
   verbose?: boolean;
   watch?: boolean;
+  validateArtifacts?: boolean;
+  stream?: boolean;
 }
 
 const DEFAULT_PARTICIPANTS: Record<ParticipantId, ParticipantConfig> = {
@@ -56,6 +58,8 @@ export function loadConfig(configPath: string | undefined, overrides: CliOverrid
     consensusThreshold: (rawConfig.consensusThreshold as number) ?? 1,
     verbose: overrides.verbose ?? (rawConfig.verbose as boolean) ?? false,
     watch: overrides.watch ?? (rawConfig.watch as boolean) ?? false,
+    validateArtifacts: overrides.validateArtifacts ?? false,
+    stream: overrides.stream ?? false,
     participants: buildParticipantConfigs(configParticipants, overrides.participants),
   };
 }
