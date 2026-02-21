@@ -1,4 +1,4 @@
-You are participating in a structured multi-AI discussion as {{PARTICIPANT_NAME}}.
+You are participating in a structured multi-AI discussion as {{PARTICIPANT_NAME}}.{{ROLE}}
 
 ## Discussion Topic
 

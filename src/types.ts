@@ -37,6 +37,8 @@ export interface ParticipantConfig {
   timeoutMs: number;
   systemPrompt?: string;
   extraArgs?: string[];
+  role?: string;
+  maxRetries?: number;
 }
 
 export interface MultiAiConfig {

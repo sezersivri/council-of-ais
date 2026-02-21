@@ -11,6 +11,7 @@
       "enabled": true,
       "cliPath": "claude",
       "timeoutMs": 120000,
+      "maxRetries": 1,
       "extraArgs": []
     },
     {
@@ -18,6 +19,7 @@
       "enabled": true,
       "cliPath": "codex",
       "timeoutMs": 120000,
+      "maxRetries": 1,
       "extraArgs": []
     },
     {
@@ -25,6 +27,7 @@
       "enabled": true,
       "cliPath": "gemini",
       "timeoutMs": 120000,
+      "maxRetries": 1,
       "extraArgs": []
     }
   ]

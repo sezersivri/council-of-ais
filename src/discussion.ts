@@ -77,6 +77,36 @@ export function appendFinalPlan(
   appendFileSync(filePath, section, 'utf-8');
 }
 
+export function saveStateJson(
+  filePath: string,
+  state: DiscussionState,
+  sessionMap: Map<ParticipantId, string | undefined>,
+  roundTimings?: Map<string, number>,
+): void {
+  const dir = dirname(filePath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  const sessions: Record<string, string | undefined> = {};
+  for (const [pid, sid] of sessionMap) {
+    sessions[pid] = sid;
+  }
+
+  const timings: Record<string, number> | undefined = roundTimings
+    ? Object.fromEntries(roundTimings)
+    : undefined;
+
+  const json = {
+    ...state,
+    sessions,
+    ...(timings && { roundTimings: timings }),
+    savedAt: new Date().toISOString(),
+  };
+
+  writeFileSync(filePath, JSON.stringify(json, null, 2), 'utf-8');
+}
+
 export function getLatestEntriesPerParticipant(
   state: DiscussionState,
   round: number,

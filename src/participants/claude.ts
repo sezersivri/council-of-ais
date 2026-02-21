@@ -55,7 +55,9 @@ export class ClaudeParticipant extends BaseParticipant {
   buildContinueCommand(prompt: string) {
     this.promptFile = this.writeTempPrompt(prompt);
 
-    const args = ['--continue', '-p', '--output-format', 'json'];
+    const args = this.sessionId
+      ? ['--resume', this.sessionId, '-p', '--output-format', 'json']
+      : ['--continue', '-p', '--output-format', 'json'];
 
     if (this.config.model) {
       args.push('--model', this.config.model);

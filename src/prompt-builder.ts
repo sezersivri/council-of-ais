@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { DiscussionState, ParticipantId } from './types.js';
+import { DiscussionState, ParticipantId, ParticipantConfig } from './types.js';
 import { getLatestEntriesPerParticipant } from './discussion.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18,12 +18,18 @@ export function buildInitialPrompt(
   participantId: ParticipantId,
   roundNumber: number,
   maxRounds: number,
+  role?: string,
 ): string {
   const template = readFileSync(join(TEMPLATES_DIR, 'initial-prompt.md'), 'utf-8');
+
+  const roleText = role
+    ? `\nYour assigned role is: **${role}**. Approach the discussion from this perspective.`
+    : '';
 
   return template
     .replace(/\{\{PARTICIPANT_NAME\}\}/g, PARTICIPANT_NAMES[participantId])
     .replace(/\{\{TOPIC\}\}/g, topic)
+    .replace(/\{\{ROLE\}\}/g, roleText)
     .replace(/\{\{ROUND_NUMBER\}\}/g, String(roundNumber))
     .replace(/\{\{MAX_ROUNDS\}\}/g, String(maxRounds));
 }
