@@ -1,0 +1,31 @@
+{
+  "maxRounds": 5,
+  "consensusThreshold": 1,
+  "outputDir": "./output",
+  "outputFile": "discussion.md",
+  "verbose": false,
+  "watch": false,
+  "participants": [
+    {
+      "id": "claude",
+      "enabled": true,
+      "cliPath": "claude",
+      "timeoutMs": 120000,
+      "extraArgs": []
+    },
+    {
+      "id": "codex",
+      "enabled": true,
+      "cliPath": "codex",
+      "timeoutMs": 120000,
+      "extraArgs": []
+    },
+    {
+      "id": "gemini",
+      "enabled": true,
+      "cliPath": "gemini",
+      "timeoutMs": 120000,
+      "extraArgs": []
+    }
+  ]
+}
