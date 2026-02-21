@@ -28,9 +28,11 @@ export async function runCliProcess(
       }
     }
 
+    // On Windows, npm global shims are .cmd files that require a shell to execute.
+    // On Unix, we skip the shell to avoid command injection and quoting bugs.
     const proc = spawn(command, args, {
       cwd: options.cwd,
-      shell: true,
+      shell: process.platform === 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
     });
@@ -39,14 +41,23 @@ export async function runCliProcess(
     let stderr = '';
     let timedOut = false;
 
+    const MAX_BYTES = 5 * 1024 * 1024;
+    const TRUNC_MARKER = '\n[OUTPUT TRUNCATED — exceeded 5MB]\n';
+
     proc.stdout.on('data', (data: Buffer) => {
       const chunk = data.toString();
-      stdout += chunk;
       options.onStdoutData?.(chunk);
+      if (stdout.length < MAX_BYTES) {
+        stdout += chunk;
+        if (stdout.length >= MAX_BYTES) stdout += TRUNC_MARKER;
+      }
     });
 
     proc.stderr.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      if (stderr.length < MAX_BYTES) {
+        stderr += data.toString();
+        if (stderr.length >= MAX_BYTES) stderr += TRUNC_MARKER;
+      }
     });
 
     if (options.stdinData) {

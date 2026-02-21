@@ -34,12 +34,25 @@ export function buildInitialPrompt(
     .replace(/\{\{MAX_ROUNDS\}\}/g, String(maxRounds));
 }
 
+const CATCH_UP_FORMAT_RULES = `\
+Use EXACTLY these three sections:
+
+### Substance
+Your position, reasoning, and concrete plan. No preamble.
+
+### Deltas
+None (or +/-/~ bullets if you have position changes)
+
+### Consensus Signal
+Write exactly one of: \`AGREE\`, \`PARTIALLY_AGREE\`, or \`DISAGREE\` on its own line.`;
+
 export function buildRoundPrompt(
   state: DiscussionState,
   participantId: ParticipantId,
   roundNumber: number,
   maxRounds: number,
   userGuidance?: string,
+  isFreshSession?: boolean,
 ): string {
   const template = readFileSync(join(TEMPLATES_DIR, 'round-prompt.md'), 'utf-8');
 
@@ -64,33 +77,69 @@ export function buildRoundPrompt(
     ? `**User guidance for this round:** ${userGuidance}\n\n`
     : '';
 
-  return template
+  // Round 3+: inject convergence pressure instruction into Substance
+  const convergenceInstruction = roundNumber >= 3
+    ? '**First line must be:** `Merging with @Agent` or `Holding: [one-sentence reason]`\n'
+    : '';
+
+  const roundPrompt = template
     .replace(/\{\{ROUND_NUMBER\}\}/g, String(roundNumber))
     .replace(/\{\{MAX_ROUNDS\}\}/g, String(maxRounds))
     .replace(/\{\{OTHER_RESPONSES\}\}/g, otherResponsesText)
-    .replace(/\{\{USER_GUIDANCE\}\}/g, guidanceText);
+    .replace(/\{\{USER_GUIDANCE\}\}/g, guidanceText)
+    .replace(/\{\{CONVERGENCE_INSTRUCTION\}\}/g, convergenceInstruction);
+
+  // Item 9: prepend catch-up context for participants rejoining after a session reset
+  if (isFreshSession && roundNumber > 1) {
+    const catchUp = [
+      '## Catch-Up Context (you rejoined mid-discussion)',
+      '',
+      `**Original Topic (summary):** ${state.topic.slice(0, 500)}`,
+      '',
+      '**Format rules:**',
+      CATCH_UP_FORMAT_RULES,
+      '',
+      '**What others proposed last round:**',
+      otherResponsesText,
+      '',
+      '---',
+      'Now continue with this round\'s delta:',
+      '',
+    ].join('\n');
+    return catchUp + roundPrompt;
+  }
+
+  return roundPrompt;
 }
 
 /**
  * Format a discussion entry for inclusion in a round delta prompt.
- * Uses parsed sections when available (context reduction), falls back to raw text.
+ * Context reduction: sends substance + deltas only, not full raw response.
  */
 function formatEntryForDelta(pid: ParticipantId, entry: DiscussionEntry): string {
   if (entry.parsedSections) {
     const s = entry.parsedSections;
     const parts: string[] = [`### ${PARTICIPANT_NAMES[pid]}:`];
 
-    if (s.proposal) {
-      parts.push(`\n**Proposal:** ${s.proposal}`);
+    // New format: substance field; old format: proposal || analysis
+    const content = s.substance || s.proposal || s.analysis;
+    if (content) {
+      parts.push(`\n**Substance:** ${content}`);
     }
-    if (s.pointsOfAgreement.length > 0) {
-      parts.push(`\n**Points of Agreement:**\n${s.pointsOfAgreement.map((p) => `- ${p}`).join('\n')}`);
-    }
-    if (s.pointsOfDisagreement.length > 0) {
-      parts.push(`\n**Points of Disagreement:**\n${s.pointsOfDisagreement.map((p) => `- ${p}`).join('\n')}`);
-    }
-    parts.push(`\n**Signal:** ${s.consensusSignal}`);
 
+    // New format: deltas; old format: agreement/disagreement bullets
+    if (s.deltas && s.deltas.length > 0) {
+      parts.push(`\n**Deltas:**\n${s.deltas.map((d) => `- ${d}`).join('\n')}`);
+    } else {
+      if (s.pointsOfAgreement.length > 0) {
+        parts.push(`\n**Agreed:**\n${s.pointsOfAgreement.map((p) => `- ${p}`).join('\n')}`);
+      }
+      if (s.pointsOfDisagreement.length > 0) {
+        parts.push(`\n**Disagreed:**\n${s.pointsOfDisagreement.map((p) => `- ${p}`).join('\n')}`);
+      }
+    }
+
+    parts.push(`\n**Signal:** ${s.consensusSignal}`);
     return parts.join('\n');
   }
 

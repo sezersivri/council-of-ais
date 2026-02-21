@@ -52,8 +52,16 @@ export abstract class BaseParticipant {
     this.lastFailureWasTokenLimit = false;
   }
 
+  /** Called by orchestrator on failure paths to clean up any pending temp prompt files. */
+  cleanupCurrentPromptFile(): void {
+    // No-op by default. Overridden by participants that use temp files.
+  }
+
   isTokenLimitError(result: ProcessResult): boolean {
-    const text = `${result.stderr} ${result.stdout}`.toLowerCase();
+    // Only check stderr — stdout contains the AI's response text and may
+    // legitimately include phrases like "token limit" or "context window"
+    // as content (e.g. when reviewing a tool that discusses those concepts).
+    const text = result.stderr.toLowerCase();
     const patterns = [
       'context_length_exceeded',
       'context length',

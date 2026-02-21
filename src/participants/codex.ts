@@ -7,7 +7,20 @@ import { join } from 'path';
 export class CodexParticipant extends BaseParticipant {
   private promptFile: string | null = null;
 
+  private cleanupPromptFile() {
+    if (this.promptFile) {
+      try { unlinkSync(this.promptFile); } catch { /* ignore */ }
+      this.promptFile = null;
+    }
+  }
+
+  override cleanupCurrentPromptFile(): void {
+    this.cleanupPromptFile();
+  }
+
   buildFirstCommand(prompt: string) {
+    // Clean up any previous temp file before writing a new one.
+    this.cleanupPromptFile();
     // Codex exec doesn't support stdin well — write prompt to a temp file
     // and use shell redirection to pass it
     const tmpDir = join(process.cwd(), '.multi-ai-tmp');
@@ -37,16 +50,14 @@ export class CodexParticipant extends BaseParticipant {
   }
 
   buildContinueCommand(prompt: string) {
-    const args = ['exec', 'resume'];
-
-    // Use session-specific resume when available to avoid race conditions
-    // with other Codex instances. Falls back to --last if no session ID.
-    // Note: --session flag support is assumed but unverified — graceful fallback is in place.
-    if (this.sessionId) {
-      args.push('--session', this.sessionId);
-    } else {
-      args.push('--last');
+    // If no session ID was captured (e.g. first round failed before parsing),
+    // start a fresh ephemeral session instead of using --last which could
+    // accidentally resume another Codex session from parallel execution.
+    if (!this.sessionId) {
+      return this.buildFirstCommand(prompt);
     }
+
+    const args = ['exec', 'resume', '--session', this.sessionId];
 
     if (this.config.model) {
       args.push('-m', this.config.model);
@@ -60,6 +71,28 @@ export class CodexParticipant extends BaseParticipant {
       args,
       stdinData: prompt,
     };
+  }
+
+  isTokenLimitError(result: ProcessResult): boolean {
+    // Codex echoes the full conversation (including the user prompt) in stderr
+    // as a session log. The prompt may legitimately contain phrases like
+    // "token limit" or "context window" (e.g. when the topic discusses those
+    // concepts). Strip everything from the conversation echo onward so we only
+    // check the Codex header/error section at the top of stderr.
+    //
+    // Stderr structure:
+    //   Reading prompt from stdin...
+    //   OpenAI Codex v0.x.y
+    //   --------
+    //   workdir: ...  model: ...  session id: ...
+    //   --------         ← second separator
+    //   user             ← conversation echo starts here
+    //   [prompt text]
+    const stderr = stripAnsi(result.stderr);
+    const firstSep = stderr.indexOf('--------');
+    const secondSep = firstSep !== -1 ? stderr.indexOf('--------', firstSep + 8) : -1;
+    const headerOnly = secondSep !== -1 ? stderr.slice(0, secondSep) : stderr;
+    return super.isTokenLimitError({ ...result, stderr: headerOnly });
   }
 
   parseOutput(result: ProcessResult): ParticipantOutput {

@@ -5,6 +5,7 @@ import { MultiAiConfig, ParticipantConfig, ParticipantId } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_PATH = join(__dirname, '..', 'config.default.json');
+const CWD_CONFIG_NAME = 'multi-ai.json';
 
 interface CliOverrides {
   maxRounds?: number;
@@ -14,12 +15,18 @@ interface CliOverrides {
   watch?: boolean;
   validateArtifacts?: boolean;
   stream?: boolean;
+  dryRun?: boolean;
+  debug?: boolean;
+  jsonReport?: string;
+  ci?: boolean;
+  projectGuidance?: string;
+  skipPreflight?: boolean;
 }
 
 export const RECOMMENDED_MODELS: Record<ParticipantId, string> = {
   claude: 'claude-opus-4-6',
   codex: 'gpt-5.3-codex',
-  gemini: 'gemini-3.1-pro-preview',
+  gemini: 'gemini-3-pro-preview',
 };
 
 const DEFAULT_PARTICIPANTS: Record<ParticipantId, ParticipantConfig> = {
@@ -54,11 +61,20 @@ export function loadConfig(configPath: string | undefined, overrides: CliOverrid
 
   if (configPath && existsSync(configPath)) {
     rawConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
-  } else if (existsSync(DEFAULT_CONFIG_PATH)) {
-    rawConfig = JSON.parse(readFileSync(DEFAULT_CONFIG_PATH, 'utf-8'));
+  } else {
+    // Auto-discover: check CWD for multi-ai.json first, then fall back to default
+    const cwdConfig = join(process.cwd(), CWD_CONFIG_NAME);
+    if (existsSync(cwdConfig)) {
+      rawConfig = JSON.parse(readFileSync(cwdConfig, 'utf-8'));
+    } else if (existsSync(DEFAULT_CONFIG_PATH)) {
+      rawConfig = JSON.parse(readFileSync(DEFAULT_CONFIG_PATH, 'utf-8'));
+    }
   }
 
   const configParticipants = rawConfig.participants as ParticipantConfig[] | undefined;
+
+  // --ci is a convenience alias: sets jsonReport default, enforces exit codes
+  const isCi = overrides.ci ?? (rawConfig.ci as boolean) ?? false;
 
   return {
     maxRounds: overrides.maxRounds ?? (rawConfig.maxRounds as number) ?? 5,
@@ -69,6 +85,12 @@ export function loadConfig(configPath: string | undefined, overrides: CliOverrid
     watch: overrides.watch ?? (rawConfig.watch as boolean) ?? false,
     validateArtifacts: overrides.validateArtifacts ?? false,
     stream: overrides.stream ?? false,
+    dryRun: overrides.dryRun ?? false,
+    debug: overrides.debug ?? (rawConfig.debug as boolean) ?? false,
+    jsonReport: overrides.jsonReport ?? (rawConfig.jsonReport as string | undefined) ?? (isCi ? './result.json' : undefined),
+    ci: isCi,
+    projectGuidance: overrides.projectGuidance ?? (rawConfig.guidance as string | undefined),
+    skipPreflight: overrides.skipPreflight ?? false,
     participants: buildParticipantConfigs(configParticipants, overrides.participants),
   };
 }

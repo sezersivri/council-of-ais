@@ -1,25 +1,18 @@
-**ATTENTION: TIE-BREAKER ROUND**
+**TIE-BREAKER ROUND** — The Lead Architect ({{LEAD_NAME}}) has issued a final compromise.
 
-The Lead Architect ({{LEAD_NAME}}) has issued a final compromise proposal because the discussion stalled.
-
-Here is the Lead Architect's proposal:
+Lead's proposal:
 
 {{LEAD_RESPONSE}}
 
 {{OTHER_RESPONSES_SECTION}}
 
-Your task:
-- Accept the Lead's proposal and signal `AGREE`, OR
-- Identify a **fatal flaw** (not a minor preference) and signal `DISAGREE` with specific reasoning
+Accept the Lead's proposal or identify a **fatal flaw** (not a minor preference).
 
-Only reject if you believe the proposal has a serious technical or logical error. Minor stylistic preferences are not grounds for rejection.
+### Substance
+State your position. If accepting: confirm and explain why it resolves the deadlock. If rejecting: name the specific technical or logical error — stylistic preferences are not grounds for rejection.
 
-Respond with the same structure:
+### Deltas
+What changed from your last position. Max 3 bullets. Write `None` if unchanged.
 
-### Analysis
-### Points of Agreement
-### Points of Disagreement
-### Proposal
 ### Consensus Signal
-
-Remember: write exactly `AGREE`, `PARTIALLY_AGREE`, or `DISAGREE` under Consensus Signal.
+AGREE | DISAGREE

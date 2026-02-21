@@ -1,22 +1,20 @@
-**ATTENTION: TIE-BREAKER ROUND**
+**TIE-BREAKER ROUND** — The discussion stalled after {{ROUNDS_ELAPSED}} rounds.
 
-The discussion has stalled after {{ROUNDS_ELAPSED}} rounds without reaching consensus. As the **Lead Architect**, you must now issue a final compromise proposal.
+As Lead Architect, issue the final compromise proposal now.
 
-Here is what the other participants said in the previous round:
+What participants said last round:
 
 {{OTHER_RESPONSES}}
 
-{{USER_GUIDANCE}}Your task:
-1. Identify the core disagreements that are blocking consensus
-2. Propose a concrete compromise that incorporates the best ideas from all sides
-3. Your proposal carries special weight — other participants must accept it or identify a fatal flaw
+{{USER_GUIDANCE}}
 
-Respond with the same structure:
+### Substance
+Identify the core blocker and state a concrete compromise. Be decisive — this is the final call.
 
-### Analysis
-### Points of Agreement
-### Points of Disagreement
-### Proposal
+### Deltas
+List what you are adopting from each side and what you are overriding. Max 3 bullets.
+
 ### Consensus Signal
+AGREE
 
-You MUST signal `AGREE` with your own compromise proposal.
+You must signal AGREE with your own compromise. Other participants will accept or identify a fatal flaw.

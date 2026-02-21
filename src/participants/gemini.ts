@@ -4,11 +4,14 @@ import { stripAnsi } from '../process-runner.js';
 
 export class GeminiParticipant extends BaseParticipant {
   buildFirstCommand(prompt: string) {
-    // Gemini reads from stdin in headless mode
+    // Gemini reads from stdin in headless mode.
+    // Model is set via GEMINI_MODEL env var rather than -m flag because
+    // the -m flag does not support preview/experimental model names.
     const args: string[] = [];
+    const env: Record<string, string | undefined> = {};
 
     if (this.config.model) {
-      args.push('-m', this.config.model);
+      env['GEMINI_MODEL'] = this.config.model;
     }
     if (this.config.extraArgs) {
       args.push(...this.config.extraArgs);
@@ -18,17 +21,16 @@ export class GeminiParticipant extends BaseParticipant {
       command: this.config.cliPath || 'gemini',
       args,
       stdinData: prompt,
+      env,
     };
   }
 
   buildContinueCommand(prompt: string) {
-    // Use session-specific resume when available to avoid race conditions
-    // with other Gemini instances. Falls back to 'latest' if no session ID.
-    // Note: session-specific --resume support is assumed but unverified — graceful fallback is in place.
     const args = ['--resume', this.sessionId || 'latest'];
+    const env: Record<string, string | undefined> = {};
 
     if (this.config.model) {
-      args.push('-m', this.config.model);
+      env['GEMINI_MODEL'] = this.config.model;
     }
     if (this.config.extraArgs) {
       args.push(...this.config.extraArgs);
@@ -38,6 +40,7 @@ export class GeminiParticipant extends BaseParticipant {
       command: this.config.cliPath || 'gemini',
       args,
       stdinData: prompt,
+      env,
     };
   }
 

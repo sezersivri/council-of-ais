@@ -1,14 +1,25 @@
 import { createInterface } from 'readline';
 import { join } from 'path';
-import { rmSync, existsSync } from 'fs';
+import { rmSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import {
   DiscussionState,
   DiscussionEntry,
   MultiAiConfig,
   OrchestrationResult,
   ParticipantId,
+  DiscussionResult,
+  ParticipantStats,
+  RoundData,
 } from './types.js';
-import { initializeDiscussion, appendEntry, appendFinalPlan, saveStateJson } from './discussion.js';
+import {
+  initializeDiscussion,
+  appendEntry,
+  appendFinalPlan,
+  appendRichFooter,
+  saveStateJson,
+  extractDecisions,
+  extractActionItems,
+} from './discussion.js';
 import {
   buildInitialPrompt, buildRoundPrompt, buildFinalSummaryPrompt,
   buildTieBreakerLeadPrompt, buildTieBreakerFollowPrompt,
@@ -18,9 +29,22 @@ import { runCliProcess } from './process-runner.js';
 import { createParticipant, BaseParticipant } from './participants/index.js';
 import { validateArtifact } from './artifact-validator.js';
 import { StreamDisplay } from './stream-display.js';
+import { evaluateQualityGate } from './quality-gate.js';
 
 function log(msg: string) {
   process.stdout.write(msg + '\n');
+}
+
+function debugLog(config: MultiAiConfig, event: string, msg: string) {
+  if (config.debug) {
+    process.stderr.write(`[DEBUG] [${event}] ${msg}\n`);
+  }
+}
+
+function generateRunId(): string {
+  const ts = Date.now().toString(36);
+  const rnd = Math.random().toString(36).slice(2, 6);
+  return `${ts}-${rnd}`;
 }
 
 async function runPreflightChecks(
@@ -70,7 +94,7 @@ async function runPreflightChecks(
   log('');
 }
 
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const seconds = (ms / 1000).toFixed(1);
   if (ms < 60000) return `${seconds}s`;
@@ -117,6 +141,7 @@ async function runParticipantTurn(
 
   if (result.timedOut) {
     log(`  [${participant.id}] TIMED OUT after ${formatDuration(result.durationMs)}`);
+    participant.cleanupCurrentPromptFile();
     return null;
   }
 
@@ -127,6 +152,7 @@ async function runParticipantTurn(
     if (verbose && result.stderr) {
       log(`    stderr: ${result.stderr.slice(0, 500)}`);
     }
+    participant.cleanupCurrentPromptFile();
     return null;
   }
 
@@ -135,6 +161,7 @@ async function runParticipantTurn(
     if (verbose && result.stderr) {
       log(`    stderr: ${result.stderr.slice(0, 500)}`);
     }
+    participant.cleanupCurrentPromptFile();
     return null;
   }
 
@@ -164,7 +191,7 @@ async function runParticipantTurnWithRetry(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) {
-      const delayMs = 2000 * attempt; // 2s, 4s, ...
+      const delayMs = 2000 * attempt;
       log(`  [${participant.id}] Retrying (attempt ${attempt + 1}/${maxRetries + 1}) after ${delayMs / 1000}s...`);
       await sleep(delayMs);
     }
@@ -172,7 +199,6 @@ async function runParticipantTurnWithRetry(
     const result = await runParticipantTurn(participant, prompt, cwd, verbose, onStdoutData);
     if (result) return result;
 
-    // Don't retry token limit errors — retrying won't help
     if (participant.lastFailureWasTokenLimit) return null;
   }
 
@@ -205,7 +231,10 @@ function printRoundSummary(results: RoundEntryResult[], failedIds: Set<Participa
   log('  └───────────┴──────────────────┴─────────┘');
 }
 
+let cleanupDone = false;
 function cleanupTempDir() {
+  if (cleanupDone) return;
+  cleanupDone = true;
   const tmpDir = join(process.cwd(), '.multi-ai-tmp');
   if (existsSync(tmpDir)) {
     try {
@@ -216,35 +245,72 @@ function cleanupTempDir() {
   }
 }
 
-export async function orchestrate(
+export function selectSummarizer(
+  participants: BaseParticipant[],
+  permanentlyFailed: Set<ParticipantId>,
+  state: DiscussionState,
+): BaseParticipant {
+  const available = participants.filter((p) => !permanentlyFailed.has(p.id));
+  const lead = available.find((p) => p.config.lead);
+  if (lead) return lead;
+  // Count AGREE signals per participant across all rounds
+  const agreeCounts = new Map<ParticipantId, number>();
+  for (const entry of state.entries) {
+    if (entry.parsedSections?.consensusSignal === 'AGREE') {
+      agreeCounts.set(entry.participant, (agreeCounts.get(entry.participant) ?? 0) + 1);
+    }
+  }
+  return available.sort(
+    (a, b) => (agreeCounts.get(b.id) ?? 0) - (agreeCounts.get(a.id) ?? 0),
+  )[0] ?? participants[0];
+}
+
+/**
+ * Core discussion loop. Accepts pre-created participants for testability.
+ * @internal exported for testing
+ */
+export async function runDiscussionWithParticipants(
   topic: string,
   config: MultiAiConfig,
-): Promise<OrchestrationResult> {
+  activeParticipants: BaseParticipant[],
+): Promise<DiscussionResult> {
   const startTime = Date.now();
+  const runId = generateRunId();
   const outputPath = join(config.outputDir, config.outputFile);
   const stateJsonPath = join(config.outputDir, 'discussion-state.json');
-
-  // Initialize participants
-  const activeParticipants = config.participants
-    .filter((p) => p.enabled)
-    .map((p) => createParticipant(p));
 
   if (activeParticipants.length < 2) {
     throw new Error('At least 2 participants are required for a discussion');
   }
 
-  // Pre-flight: verify all CLIs are available before starting
-  await runPreflightChecks(activeParticipants);
+  // Participant stats tracking
+  const statsMap = new Map<ParticipantId, { rounds: number; failures: number; totalMs: number }>(
+    activeParticipants.map((p) => [p.id, { rounds: 0, failures: 0, totalMs: 0 }]),
+  );
+
+  // Round data for rich output and JSON report
+  const roundDataList: RoundData[] = [];
+
+  // Dry-run: print Round 1 prompts and exit without invoking CLIs
+  if (config.dryRun) {
+    log('\n=== DRY RUN — Round 1 prompts (no CLIs invoked) ===\n');
+    for (const p of activeParticipants) {
+      const prompt = buildInitialPrompt(topic, p.id, 1, config.maxRounds, p.config.role);
+      log(`\n--- ${p.displayName()} ---\n${prompt}`);
+    }
+    return buildResult(runId, topic, config, activeParticipants, statsMap, [], null, false, false, startTime);
+  }
 
   const participantIds = activeParticipants.map((p) => p.id);
 
   // Initialize discussion file
   const state = initializeDiscussion(outputPath, topic, participantIds);
 
-  // Track failed participants across rounds
-  const failedParticipants = new Set<ParticipantId>();
+  // Graduated failure policy
+  const roundFailureCount = new Map<ParticipantId, number>();
+  const permanentlyFailed = new Set<ParticipantId>();
 
-  // Track participants that hit token limit last round (they rejoin with fresh session)
+  // Track participants that hit token limit last round
   const tokenLimitedLastRound = new Set<ParticipantId>();
 
   // Build session map for state persistence
@@ -253,11 +319,10 @@ export async function orchestrate(
     sessionMap.set(p.id, undefined);
   }
 
-  // SIGINT handler: flush state and clean up
+  // SIGINT handler
   let sigintReceived = false;
   const sigintHandler = () => {
     if (sigintReceived) {
-      // Second Ctrl+C: force exit
       process.exit(1);
     }
     sigintReceived = true;
@@ -273,16 +338,15 @@ export async function orchestrate(
   };
   process.on('SIGINT', sigintHandler);
 
-  // Temp dir cleanup on normal exit
-  process.on('exit', () => {
-    cleanupTempDir();
-  });
+  const exitHandler = () => cleanupTempDir();
+  process.on('exit', exitHandler);
 
   log('');
   log('========================================');
   log('  Multi-AI Discussion');
   log('========================================');
   log(`  Topic: ${topic}`);
+  log(`  Run ID: ${runId}`);
   log('  Participants:');
   for (const p of activeParticipants) {
     log(`    ${p.displayName().padEnd(20)} — ${p.modelDisplay()}`);
@@ -291,6 +355,8 @@ export async function orchestrate(
   log(`  Mode: ${config.watch ? 'Interactive (--watch)' : 'Automated'}`);
   if (config.validateArtifacts) log('  Artifact validation: ON');
   if (config.stream) log('  Streaming display: ON');
+  if (config.debug) log('  Debug logging: ON (stderr)');
+  if (config.ci) log('  CI mode: ON');
   log(`  Output: ${outputPath}`);
   log('========================================');
   log('');
@@ -305,15 +371,22 @@ export async function orchestrate(
   }
 
   let consensusReached = false;
-  let userGuidance: string | undefined;
+  let userGuidance: string | undefined = config.projectGuidance;
+
+  // Stall detection
+  let staleRoundsCount = 0;
+  const lastProposals = new Map<ParticipantId, string>();
+
+  let lastRound = 0;
 
   for (let round = 1; round <= config.maxRounds; round++) {
+    lastRound = round;
+    const roundStart = Date.now();
     log(`--- Round ${round} of ${config.maxRounds} ---`);
     log('');
 
-    // Filter out permanently failed participants
     const roundParticipants = activeParticipants.filter(
-      (p) => !failedParticipants.has(p.id),
+      (p) => !permanentlyFailed.has(p.id),
     );
 
     if (roundParticipants.length < 2) {
@@ -321,7 +394,7 @@ export async function orchestrate(
       break;
     }
 
-    // Build prompts for each participant
+    // Build prompts
     const participantPrompts = new Map<BaseParticipant, string>();
     for (const participant of roundParticipants) {
       let prompt: string;
@@ -339,40 +412,39 @@ export async function orchestrate(
       } else if (tieBreakerPhase === 'others-respond' && leadParticipant && participant.id !== leadParticipant.id) {
         prompt = buildTieBreakerFollowPrompt(state, participant.id, leadParticipant.id, round, config.maxRounds, userGuidance);
       } else {
-        prompt = buildRoundPrompt(state, participant.id, round, config.maxRounds, userGuidance);
+        const isFreshSession = !participant.sessionStarted && round > 1;
+        if (isFreshSession) {
+          debugLog(config, 'CATCHUP_INJECT', `${participant.id} has no session — injecting catch-up context`);
+        }
+        prompt = buildRoundPrompt(state, participant.id, round, config.maxRounds, userGuidance, isFreshSession);
       }
 
-      // Inject failed participant info into delta prompts for round 2+
-      if (round > 1 && failedParticipants.size > 0) {
-        const failedList = Array.from(failedParticipants).join(', ');
+      if (round > 1 && permanentlyFailed.size > 0) {
+        const failedList = Array.from(permanentlyFailed).join(', ');
         prompt += `\n\n**Note:** The following participants have dropped out due to failures: ${failedList}. Continue the discussion with remaining participants.`;
-      }
-
-      // Notify about participants rejoining after token limit
-      if (tokenLimitedLastRound.size > 0) {
-        const limitList = Array.from(tokenLimitedLastRound).join(', ');
-        prompt += `\n\n**Note:** ${limitList} hit their token limit last round and are rejoining with a fresh session. Brief context may help them catch up.`;
       }
 
       participantPrompts.set(participant, prompt);
     }
 
-    // Streaming display or simple log
+    const executionParticipants = (tieBreakerPhase === 'lead-proposes' && leadParticipant)
+      ? roundParticipants.filter((p) => p.id === leadParticipant.id)
+      : roundParticipants;
+
     const useStreaming = config.stream && process.stdout.isTTY;
     let streamDisplay: StreamDisplay | undefined;
 
     if (useStreaming) {
-      streamDisplay = new StreamDisplay(roundParticipants.map((p) => p.id));
+      streamDisplay = new StreamDisplay(executionParticipants.map((p) => p.id));
       streamDisplay.start();
     } else {
-      for (const participant of roundParticipants) {
+      for (const participant of executionParticipants) {
         log(`  [${participant.id}] Thinking...`);
       }
     }
 
-    // Run all participants in parallel
     const results = await Promise.allSettled(
-      roundParticipants.map(async (participant) => {
+      executionParticipants.map(async (participant) => {
         const prompt = participantPrompts.get(participant)!;
         const onData = streamDisplay
           ? (chunk: string) => streamDisplay!.onData(participant.id, chunk)
@@ -385,11 +457,8 @@ export async function orchestrate(
           onData,
         );
         if (streamDisplay) {
-          if (result) {
-            streamDisplay.onDone(participant.id);
-          } else {
-            streamDisplay.onFailed(participant.id);
-          }
+          if (result) streamDisplay.onDone(participant.id);
+          else streamDisplay.onFailed(participant.id);
         }
         return { participant, result };
       }),
@@ -397,7 +466,6 @@ export async function orchestrate(
 
     streamDisplay?.stop();
 
-    // Process results
     const roundResults: RoundEntryResult[] = [];
     const roundFailedIds = new Set<ParticipantId>();
     const roundTokenLimitIds = new Set<ParticipantId>();
@@ -405,7 +473,6 @@ export async function orchestrate(
 
     for (const settled of results) {
       if (settled.status === 'rejected') {
-        // Promise itself was rejected (unexpected)
         log(`  [unknown] Unexpected error: ${settled.reason}`);
         continue;
       }
@@ -414,31 +481,67 @@ export async function orchestrate(
 
       if (!result) {
         roundFailedIds.add(participant.id);
+        const stats = statsMap.get(participant.id);
+        if (stats) stats.failures++;
 
         if (participant.lastFailureWasTokenLimit) {
-          // Token limit: reset session so they rejoin next round fresh
           roundTokenLimitIds.add(participant.id);
           participant.resetSession();
+          debugLog(config, 'SESSION_RESET', `${participant.id} session reset after token limit`);
           log('');
           log(`  WARNING: [${participant.id}] hit token/context limit — session reset, will rejoin next round`);
         } else {
-          // Permanent failure
           if (!useStreaming) log(`  [${participant.id}] Failed all retries`);
-          failedParticipants.add(participant.id);
+          const newCount = (roundFailureCount.get(participant.id) ?? 0) + 1;
+          roundFailureCount.set(participant.id, newCount);
+          debugLog(config, 'FAILURE_INCREMENT', `${participant.id} failure count = ${newCount}`);
+          if (newCount >= 2) {
+            permanentlyFailed.add(participant.id);
+            debugLog(config, 'PERMANENT_REMOVE', `${participant.id} permanently removed after ${newCount} consecutive failures`);
+            log(`  [${participant.id}] Permanently removed after ${newCount} consecutive round failures`);
+          }
         }
         continue;
       }
 
-      // Parse structured sections
-      const parsed = parseResponseSections(result.response);
-      const signal = parsed?.consensusSignal || 'UNKNOWN';
+      // Success: reset failure counter, update stats
+      roundFailureCount.set(participant.id, 0);
+      const stats = statsMap.get(participant.id);
+      if (stats) {
+        stats.rounds++;
+        stats.totalMs += result.durationMs;
+      }
+
+      let parsedSections = parseResponseSections(result.response);
+      let finalResponse = result.response;
+
+      if (!parsedSections && participant.sessionStarted) {
+        const repairPrompt =
+          'Your previous response could not be parsed. Please reformat using exactly these sections:\n' +
+          '### Analysis\n### Points of Agreement\n### Points of Disagreement\n### Proposal\n### Consensus Signal\n' +
+          'Write AGREE, PARTIALLY_AGREE, or DISAGREE under Consensus Signal.';
+        debugLog(config, 'REPAIR_REPROMPT', `${participant.id} malformed output — sending repair reprompt`);
+        log(`  [${participant.id}] Malformed output — sending repair reprompt...`);
+        const repairResult = await runParticipantTurn(
+          participant, repairPrompt, process.cwd(), config.verbose,
+        );
+        if (repairResult) {
+          const repairedSections = parseResponseSections(repairResult.response);
+          if (repairedSections) {
+            finalResponse = repairResult.response;
+            parsedSections = repairedSections;
+          }
+        }
+      }
+
+      const signal = parsedSections?.consensusSignal || 'UNKNOWN';
 
       const entry: DiscussionEntry = {
         round,
         participant: participant.id,
         timestamp: new Date().toISOString(),
-        rawResponse: result.response,
-        parsedSections: parsed,
+        rawResponse: finalResponse,
+        parsedSections,
       };
 
       appendEntry(outputPath, state, entry);
@@ -448,9 +551,8 @@ export async function orchestrate(
         log(`  [${participant.id}] Done (${formatDuration(result.durationMs)}) — Signal: ${signal}`);
       }
 
-      // Artifact validation (opt-in via --validate-artifacts)
       if (config.validateArtifacts) {
-        const artifact = extractCodeArtifact(result.response);
+        const artifact = extractCodeArtifact(finalResponse);
         if (artifact) {
           log(`  [${participant.id}] Validating code artifact (${artifact.language})...`);
           try {
@@ -467,34 +569,37 @@ export async function orchestrate(
         }
       }
 
-      // Update session map
       sessionMap.set(participant.id, participant.sessionId);
     }
 
-    // Inject artifact errors as system guidance for the next round
+    // Record round data
+    const roundDurationMs = Date.now() - roundStart;
+    const roundConsensusStatus = detectConsensus(state, config.consensusThreshold);
+    roundDataList.push({
+      round,
+      entries: roundResults.map((r) => r.entry),
+      consensusStatus: roundConsensusStatus,
+      durationMs: roundDurationMs,
+    });
+
     if (artifactErrors.length > 0) {
       const errorGuidance = '**System: Artifact Validation Errors:**\n' + artifactErrors.join('\n\n');
       userGuidance = userGuidance ? userGuidance + '\n\n' + errorGuidance : errorGuidance;
     } else {
-      // Clear user guidance after it's been used (only if no artifact errors to carry forward)
-      userGuidance = undefined;
+      userGuidance = config.projectGuidance;
     }
 
-    // Print round summary table
     printRoundSummary(roundResults, roundFailedIds, roundTokenLimitIds);
 
-    // Update token-limited tracking for next round's prompt injection
     tokenLimitedLastRound.clear();
     for (const pid of roundTokenLimitIds) {
       tokenLimitedLastRound.add(pid);
     }
 
-    // Check consensus
-    state.consensusStatus = detectConsensus(state, config.consensusThreshold);
+    state.consensusStatus = roundConsensusStatus;
     log('');
     log(`  Consensus status: ${state.consensusStatus}`);
 
-    // Save state JSON after each round
     try {
       saveStateJson(stateJsonPath, state, sessionMap);
     } catch {
@@ -508,31 +613,45 @@ export async function orchestrate(
       break;
     }
 
-    // Tie-breaker phase transitions
+    // Stall detection
+    if (state.consensusStatus === 'disagreement') {
+      const currentProposals = new Map<ParticipantId, string>();
+      for (const { entry } of roundResults) {
+        if (entry.parsedSections?.proposal) {
+          currentProposals.set(entry.participant as ParticipantId, entry.parsedSections.proposal);
+        }
+      }
+      const stagnantCount = Array.from(currentProposals.entries())
+        .filter(([id, p]) => lastProposals.get(id) === p).length;
+      if (currentProposals.size > 0 && stagnantCount > currentProposals.size / 2) {
+        staleRoundsCount++;
+        debugLog(config, 'STALL_DETECT', `staleRoundsCount = ${staleRoundsCount}`);
+      } else {
+        staleRoundsCount = 0;
+      }
+      for (const [id, p] of currentProposals) lastProposals.set(id, p);
+    } else {
+      staleRoundsCount = 0;
+    }
+
+    // Tie-breaker transitions
     if (tieBreakerPhase === 'lead-proposes') {
       tieBreakerPhase = 'others-respond';
       log('  Tie-breaker: others will respond to the Lead\'s proposal next round.');
     } else if (tieBreakerPhase === 'others-respond') {
       tieBreakerPhase = 'inactive';
-    } else if (
-      leadParticipant &&
-      round >= 2 &&
-      (state.consensusStatus === 'disagreement' || state.consensusStatus === 'emerging')
-    ) {
+    } else if (leadParticipant && staleRoundsCount >= 2 && state.consensusStatus === 'disagreement') {
       tieBreakerPhase = 'lead-proposes';
+      staleRoundsCount = 0;
+      debugLog(config, 'TIEBREAKER_ACTIVATE', `${leadParticipant.id} will issue a final compromise next round`);
       log('');
       log('  *** TIE-BREAKER ACTIVATED ***');
       log(`  ${leadParticipant.displayName()} will issue a final compromise next round.`);
-    } else if (
-      !leadParticipant &&
-      round >= 3 &&
-      state.consensusStatus === 'disagreement'
-    ) {
+    } else if (!leadParticipant && staleRoundsCount >= 2 && state.consensusStatus === 'disagreement') {
       log('');
       log('  Tip: Configure a participant with "lead": true in config for tie-breaker rounds.');
     }
 
-    // Watch mode: pause between rounds
     if (config.watch && round < config.maxRounds) {
       log('');
       const input = await promptUser(
@@ -543,7 +662,7 @@ export async function orchestrate(
         log('  Stopping discussion by user request.');
         break;
       } else if (input.length > 0) {
-        userGuidance = input;
+        userGuidance = userGuidance ? userGuidance + '\n\n' + input : input;
         log(`  Guidance noted: "${input}"`);
       }
       log('');
@@ -554,7 +673,7 @@ export async function orchestrate(
   log('');
   log('Generating final summary...');
 
-  const summarizer = activeParticipants[0];
+  const summarizer = selectSummarizer(activeParticipants, permanentlyFailed, state);
   const summaryPrompt = buildFinalSummaryPrompt(state);
 
   const summaryResult = await runParticipantTurn(
@@ -564,16 +683,16 @@ export async function orchestrate(
     config.verbose,
   );
 
-  if (summaryResult) {
-    appendFinalPlan(outputPath, state, summaryResult.response, consensusReached);
-  } else {
-    appendFinalPlan(
-      outputPath,
-      state,
-      '*Failed to generate final summary. See discussion above.*',
-      consensusReached,
-    );
-  }
+  const finalSummary = summaryResult?.response ?? '*Failed to generate final summary. See discussion above.*';
+  appendFinalPlan(outputPath, state, finalSummary, consensusReached);
+
+  // Evaluate quality gate
+  const maxRoundsReached = !consensusReached && lastRound >= config.maxRounds;
+  const qualityGate = evaluateQualityGate(state, consensusReached, maxRoundsReached);
+  debugLog(config, 'QUALITY_GATE', `gate=${qualityGate}, consensusReached=${consensusReached}, maxRoundsReached=${maxRoundsReached}`);
+
+  // Append rich markdown footer
+  appendRichFooter(outputPath, state, roundDataList, Date.now() - startTime, consensusReached, runId);
 
   // Final state save
   try {
@@ -583,32 +702,139 @@ export async function orchestrate(
   }
 
   const totalMs = Date.now() - startTime;
-  const maxRound = state.entries.length > 0
-    ? Math.max(...state.entries.map((e) => e.round))
-    : 0;
+  const actualMaxRound = state.entries.reduce((m, e) => Math.max(m, e.round), 0);
 
   log('');
   log('========================================');
   log('  Discussion Complete');
   log('========================================');
-  log(`  Rounds: ${maxRound}`);
+  log(`  Rounds: ${actualMaxRound}`);
   log(`  Consensus: ${consensusReached ? 'YES' : 'NO'}`);
+  log(`  Quality gate: ${qualityGate.toUpperCase()}`);
   log(`  Duration: ${formatDuration(totalMs)}`);
   log(`  Output: ${outputPath}`);
   log(`  State: ${stateJsonPath}`);
   log('========================================');
   log('');
 
-  // Remove SIGINT handler to avoid leak
   process.removeListener('SIGINT', sigintHandler);
+  process.removeListener('exit', exitHandler);
+
+  const result = buildResult(
+    runId, topic, config, activeParticipants, statsMap,
+    roundDataList, state, consensusReached, maxRoundsReached, startTime,
+    qualityGate, finalSummary,
+  );
+
+  // Write JSON report
+  if (config.jsonReport) {
+    const reportPath = config.jsonReport;
+    const reportDir = reportPath.includes('/') || reportPath.includes('\\')
+      ? reportPath.split(/[/\\]/).slice(0, -1).join('/')
+      : '.';
+    if (reportDir && reportDir !== '.' && !existsSync(reportDir)) {
+      mkdirSync(reportDir, { recursive: true });
+    }
+    writeFileSync(reportPath, JSON.stringify(result, null, 2), 'utf-8');
+    log(`  JSON report: ${reportPath}`);
+  }
+
+  return result;
+}
+
+function buildResult(
+  runId: string,
+  topic: string,
+  config: MultiAiConfig,
+  activeParticipants: BaseParticipant[],
+  statsMap: Map<ParticipantId, { rounds: number; failures: number; totalMs: number }>,
+  roundDataList: RoundData[],
+  state: DiscussionState | null,
+  consensusReached: boolean,
+  maxRoundsReached: boolean,
+  startTime: number,
+  qualityGate?: import('./types.js').QualityGate,
+  finalSummary?: string,
+): DiscussionResult {
+  const totalMs = Date.now() - startTime;
+
+  let status: import('./types.js').RunStatus = 'no_consensus';
+  if (consensusReached && (qualityGate === 'pass' || qualityGate === 'warn')) {
+    status = 'consensus';
+  } else if (state && state.consensusStatus === 'partial') {
+    status = 'partial';
+  } else if (!state) {
+    status = 'failure';
+  }
+
+  const participants: import('./types.js').ParticipantStats[] = activeParticipants.map((p) => {
+    const s = statsMap.get(p.id) ?? { rounds: 0, failures: 0, totalMs: 0 };
+    return {
+      id: p.id,
+      rounds: s.rounds,
+      failures: s.failures,
+      avgResponseMs: s.rounds > 0 ? Math.round(s.totalMs / s.rounds) : 0,
+    };
+  });
+
+  const summary = finalSummary ?? '';
+  const maxRound = state ? state.entries.reduce((m, e) => Math.max(m, e.round), 0) : 0;
+  const decisions = state ? extractDecisions(summary, maxRound) : [];
+  const actionItems = state ? extractActionItems(summary) : [];
 
   return {
-    topic,
-    totalRounds: maxRound,
+    runId,
+    status,
     consensusReached,
-    finalPlan: state.finalPlan,
-    discussionFilePath: outputPath,
-    participants: participantIds,
+    roundCount: roundDataList.length,
     durationMs: totalMs,
+    qualityGate: qualityGate ?? 'fail',
+    finalSummary: summary,
+    decisions,
+    actionItems,
+    participants,
+    transcript: roundDataList,
+  };
+}
+
+/**
+ * Public library API: run a full discussion and return a structured result.
+ */
+export async function runDiscussion(
+  topic: string,
+  config: MultiAiConfig,
+): Promise<DiscussionResult> {
+  const participants = config.participants
+    .filter((p) => p.enabled)
+    .map((p) => createParticipant(p));
+
+  if (participants.length < 2) {
+    throw new Error('At least 2 participants are required for a discussion');
+  }
+
+  if (!config.skipPreflight) {
+    await runPreflightChecks(participants);
+  }
+
+  return runDiscussionWithParticipants(topic, config, participants);
+}
+
+/**
+ * Legacy-compatible wrapper that returns OrchestrationResult.
+ * Prefer runDiscussion() for new code.
+ */
+export async function orchestrate(
+  topic: string,
+  config: MultiAiConfig,
+): Promise<OrchestrationResult> {
+  const result = await runDiscussion(topic, config);
+  return {
+    topic,
+    totalRounds: result.roundCount,
+    consensusReached: result.consensusReached,
+    finalPlan: result.finalSummary || null,
+    discussionFilePath: join(config.outputDir, config.outputFile),
+    participants: result.participants.map((p) => p.id as ParticipantId),
+    durationMs: result.durationMs,
   };
 }

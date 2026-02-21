@@ -8,8 +8,10 @@ import { stripAnsi } from '../process-runner.js';
 const CLAUDE_ENV_CLEANUP: Record<string, string | undefined> = {
   CLAUDECODE: undefined,
   CLAUDE_CODE: undefined,
+  CLAUDE_CODE_ENTRYPOINT: undefined,
   CLAUDE_CODE_SESSION: undefined,
   CLAUDE_CODE_CONVERSATION: undefined,
+  CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: undefined,
 };
 
 export class ClaudeParticipant extends BaseParticipant {
@@ -23,14 +25,21 @@ export class ClaudeParticipant extends BaseParticipant {
     return file;
   }
 
-  private cleanupPromptFile() {
+  protected cleanupPromptFile() {
     if (this.promptFile) {
       try { unlinkSync(this.promptFile); } catch { /* ignore */ }
       this.promptFile = null;
     }
   }
 
+  override cleanupCurrentPromptFile(): void {
+    this.cleanupPromptFile();
+  }
+
   buildFirstCommand(prompt: string) {
+    // Clean up any previous temp file before writing a new one (prevents
+    // accumulation on timeout / non-zero exit before parseOutput is reached).
+    this.cleanupPromptFile();
     // Write prompt to temp file, pipe via stdin to avoid shell quoting
     // and to prevent the prompt from being intercepted by an active session
     this.promptFile = this.writeTempPrompt(prompt);
@@ -53,6 +62,7 @@ export class ClaudeParticipant extends BaseParticipant {
   }
 
   buildContinueCommand(prompt: string) {
+    this.cleanupPromptFile();
     this.promptFile = this.writeTempPrompt(prompt);
 
     const args = this.sessionId
@@ -72,6 +82,23 @@ export class ClaudeParticipant extends BaseParticipant {
       stdinData: prompt,
       env: CLAUDE_ENV_CLEANUP,
     };
+  }
+
+  isTokenLimitError(result: ProcessResult): boolean {
+    // Check stderr first (base class handles all providers)
+    if (super.isTokenLimitError(result)) return true;
+
+    // Claude outputs JSON to stdout; check for is_error: true with a
+    // token/context message in the result field.
+    try {
+      const json = JSON.parse(stripAnsi(result.stdout).trim());
+      if (json.is_error && json.result) {
+        return super.isTokenLimitError({ ...result, stderr: String(json.result), stdout: '' });
+      }
+    } catch {
+      // Not JSON — skip
+    }
+    return false;
   }
 
   parseOutput(result: ProcessResult): ParticipantOutput {

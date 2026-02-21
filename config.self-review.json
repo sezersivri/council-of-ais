@@ -1,10 +1,9 @@
 {
-  "maxRounds": 5,
+  "maxRounds": 4,
   "consensusThreshold": 1,
   "outputDir": "./output",
-  "outputFile": "discussion.md",
+  "outputFile": "self-review.md",
   "verbose": false,
-  "watch": false,
   "participants": [
     {
       "id": "claude",
@@ -30,8 +29,7 @@
       "cliPath": "gemini",
       "model": "gemini-3-pro-preview",
       "timeoutMs": 300000,
-      "maxRetries": 1,
-      "extraArgs": []
+      "maxRetries": 1
     }
   ]
 }

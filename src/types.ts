@@ -4,7 +4,18 @@ export type ConsensusStatus = 'emerging' | 'partial' | 'full' | 'disagreement';
 
 export type ConsensusSignal = 'AGREE' | 'DISAGREE' | 'PARTIALLY_AGREE';
 
+export type QualityGate = 'pass' | 'warn' | 'fail';
+
+export type RunStatus = 'consensus' | 'partial' | 'no_consensus' | 'failure';
+
 export interface ResponseSections {
+  /** New format: merged analysis+proposal */
+  substance: string;
+  /** New format: +/-/~ delta bullets */
+  deltas: string[];
+  /** New format: convergence line extracted from Substance (round 3+) */
+  convergence: string | null;
+  /** Legacy compat: = substance when new format; = proposal text when old format */
   analysis: string;
   pointsOfAgreement: string[];
   pointsOfDisagreement: string[];
@@ -52,6 +63,13 @@ export interface MultiAiConfig {
   watch: boolean;
   validateArtifacts: boolean;
   stream: boolean;
+  dryRun?: boolean;
+  debug?: boolean;
+  jsonReport?: string;
+  ci?: boolean;
+  projectGuidance?: string;
+  /** Skip CLI preflight checks — for testing only */
+  skipPreflight?: boolean;
 }
 
 export interface ProcessResult {
@@ -71,6 +89,46 @@ export interface RoundResult {
   roundNumber: number;
   entries: DiscussionEntry[];
   consensusStatus: ConsensusStatus;
+}
+
+export interface DecisionItem {
+  decision: string;
+  status: 'accepted' | 'rejected' | 'open';
+  round: number;
+}
+
+export interface ActionItem {
+  item: string;
+  priority: string;
+  rationale: string;
+}
+
+export interface ParticipantStats {
+  id: string;
+  rounds: number;
+  failures: number;
+  avgResponseMs: number;
+}
+
+export interface RoundData {
+  round: number;
+  entries: DiscussionEntry[];
+  consensusStatus: ConsensusStatus;
+  durationMs: number;
+}
+
+export interface DiscussionResult {
+  runId: string;
+  status: RunStatus;
+  consensusReached: boolean;
+  roundCount: number;
+  durationMs: number;
+  qualityGate: QualityGate;
+  finalSummary: string;
+  decisions: DecisionItem[];
+  actionItems: ActionItem[];
+  participants: ParticipantStats[];
+  transcript: RoundData[];
 }
 
 export interface OrchestrationResult {

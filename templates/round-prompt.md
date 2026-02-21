@@ -1,15 +1,25 @@
-Round {{ROUND_NUMBER}} of {{MAX_ROUNDS}}. Here is what the other participants said in the previous round:
+Round {{ROUND_NUMBER}} of {{MAX_ROUNDS}}.
+
+{{USER_GUIDANCE}}What the other participants said last round:
 
 {{OTHER_RESPONSES}}
 
 ---
 
-{{USER_GUIDANCE}}Now respond with your updated analysis. Use the same structure:
+Respond now. Use EXACTLY these three sections:
 
-### Analysis
-### Points of Agreement
-### Points of Disagreement
-### Proposal
+### Substance
+{{CONVERGENCE_INSTRUCTION}}Your updated position and plan. Only describe what changed and why — do not restate others' positions.
+
+### Deltas
+Bullet list of position changes (max 3):
+- `+adopted: [point] from @[agent]` — you adopted their idea
+- `-reject: [point] because [reason]` — you disagree
+- `~modified: [point] — [how it changed]`
+
+Write `None` if your position is unchanged.
+
 ### Consensus Signal
+AGREE | PARTIALLY_AGREE | DISAGREE
 
-Remember: write exactly `AGREE`, `PARTIALLY_AGREE`, or `DISAGREE` under Consensus Signal.
+Rules: No fluff. No restating others' arguments. Max 3 bullets in Deltas. Write exactly one signal keyword.

@@ -9,42 +9,94 @@ import { DiscussionState, ConsensusStatus, ResponseSections, ConsensusSignal, Pa
  */
 function sectionRegex(name: string): RegExp {
   return new RegExp(
-    `(?:#{1,6}\\s*${name}|\\*\\*${name}\\*\\*)\\s*:?[ \\t]*\\n?([\\s\\S]*?)(?=#{1,6}\\s|\\*\\*(?:Analysis|Points|Proposal|Consensus)\\b|$)`,
+    `(?:#{1,6}\\s*${name}|\\*\\*${name}\\*\\*)\\s*:?[ \\t]*\\n?([\\s\\S]*?)(?=#{1,6}\\s|\\*\\*(?:Analysis|Points|Proposal|Consensus|Substance|Deltas|Decision)\\b|$)`,
     'i',
   );
 }
 
+function parseSignal(rawResponse: string): ConsensusSignal {
+  const signalMatch = rawResponse.match(sectionRegex('Consensus Signal'));
+  const signalText = signalMatch?.[1]?.trim() || '';
+  if (/\bPARTIALLY_AGREE\b/i.test(signalText) || /\bPARTIALLY AGREE\b/i.test(signalText)) {
+    return 'PARTIALLY_AGREE';
+  }
+  if (/\bAGREE\b/.test(signalText) && !/\bDISAGREE\b/.test(signalText)) {
+    return 'AGREE';
+  }
+  return 'DISAGREE';
+}
+
+function parseDeltaBullets(text: string): string[] {
+  if (!text || /^\s*none\s*$/i.test(text.trim())) return [];
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[+\-~`]/.test(line) || /^[-*]/.test(line))
+    .map((line) => line.replace(/^[-*`]\s*/, '').trim())
+    .filter(Boolean);
+}
+
+const extractBullets = (text: string | undefined): string[] => {
+  if (!text) return [];
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[-*]/.test(line) || /^\d+\./.test(line))
+    .map((line) => line.replace(/^[-*]\s*/, '').replace(/^\d+\.\s*/, ''));
+};
+
 export function parseResponseSections(rawResponse: string): ResponseSections | null {
   try {
+    const consensusSignal = parseSignal(rawResponse);
+
+    // Try new High-Signal format first (Substance / Deltas / Consensus Signal)
+    const substanceMatch = rawResponse.match(sectionRegex('Substance'));
+    if (substanceMatch) {
+      const substance = substanceMatch[1]?.trim() || '';
+      const deltasMatch = rawResponse.match(sectionRegex('Deltas'));
+      const deltasRaw = deltasMatch?.[1]?.trim() || '';
+      const deltas = parseDeltaBullets(deltasRaw);
+
+      // Extract convergence statement from first non-empty line of Substance
+      const firstLine = substance.split('\n').find((l) => l.trim())?.trim() ?? '';
+      const convergence = /^(Merging with|Holding:|MERGE WITH|HOLD\b)/i.test(firstLine)
+        ? firstLine
+        : null;
+
+      return {
+        substance,
+        deltas,
+        convergence,
+        // Legacy compat — map new fields onto old ones so existing code keeps working
+        analysis: substance,
+        proposal: substance,
+        pointsOfAgreement: deltas
+          .filter((d) => /^\+/.test(d))
+          .map((d) => d.replace(/^\+\s*(adopted:)?\s*/i, '')),
+        pointsOfDisagreement: deltas
+          .filter((d) => /^-/.test(d))
+          .map((d) => d.replace(/^-\s*(reject:)?\s*/i, '')),
+        consensusSignal,
+      };
+    }
+
+    // Fall back to old format (Analysis / Points of Agreement / Points of Disagreement / Proposal / Consensus Signal)
     const analysisMatch = rawResponse.match(sectionRegex('Analysis'));
     const agreeMatch = rawResponse.match(sectionRegex('Points of Agreement'));
     const disagreeMatch = rawResponse.match(sectionRegex('Points of Disagreement'));
     const proposalMatch = rawResponse.match(sectionRegex('Proposal'));
-    const signalMatch = rawResponse.match(sectionRegex('Consensus Signal'));
 
-    const signalText = signalMatch?.[1]?.trim() || '';
-    let consensusSignal: ConsensusSignal = 'DISAGREE';
-
-    if (/\bPARTIALLY_AGREE\b/i.test(signalText) || /\bPARTIALLY AGREE\b/i.test(signalText)) {
-      consensusSignal = 'PARTIALLY_AGREE';
-    } else if (/\bAGREE\b/.test(signalText) && !/\bDISAGREE\b/.test(signalText)) {
-      consensusSignal = 'AGREE';
-    }
-
-    const extractBullets = (text: string | undefined): string[] => {
-      if (!text) return [];
-      return text
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => /^[-*]/.test(line) || /^\d+\./.test(line))
-        .map((line) => line.replace(/^[-*]\s*/, '').replace(/^\d+\.\s*/, ''));
-    };
+    const analysis = analysisMatch?.[1]?.trim() || '';
+    const proposal = proposalMatch?.[1]?.trim() || '';
 
     return {
-      analysis: analysisMatch?.[1]?.trim() || '',
+      substance: proposal || analysis,
+      deltas: [],
+      convergence: null,
+      analysis,
+      proposal,
       pointsOfAgreement: extractBullets(agreeMatch?.[1]),
       pointsOfDisagreement: extractBullets(disagreeMatch?.[1]),
-      proposal: proposalMatch?.[1]?.trim() || '',
       consensusSignal,
     };
   } catch {
