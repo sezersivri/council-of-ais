@@ -4,7 +4,8 @@ import { stripAnsi } from '../process-runner.js';
 
 export class GeminiParticipant extends BaseParticipant {
   buildFirstCommand(prompt: string) {
-    const args = [prompt];
+    // Gemini reads from stdin in headless mode
+    const args: string[] = [];
 
     if (this.config.model) {
       args.push('-m', this.config.model);
@@ -13,14 +14,15 @@ export class GeminiParticipant extends BaseParticipant {
       args.push(...this.config.extraArgs);
     }
 
-    return { command: this.config.cliPath || 'gemini', args };
+    return {
+      command: this.config.cliPath || 'gemini',
+      args,
+      stdinData: prompt,
+    };
   }
 
   buildContinueCommand(prompt: string) {
-    const args = [
-      prompt,
-      '--resume', 'latest',
-    ];
+    const args = ['--resume', 'latest'];
 
     if (this.config.model) {
       args.push('-m', this.config.model);
@@ -29,14 +31,17 @@ export class GeminiParticipant extends BaseParticipant {
       args.push(...this.config.extraArgs);
     }
 
-    return { command: this.config.cliPath || 'gemini', args };
+    return {
+      command: this.config.cliPath || 'gemini',
+      args,
+      stdinData: prompt,
+    };
   }
 
   parseOutput(result: ProcessResult): ParticipantOutput {
     const raw = stripAnsi(result.stdout).trim();
 
     // Gemini with --output-format stream-json outputs JSON lines
-    // Without it, outputs plain text
     const lines = raw.split('\n');
     const jsonLines = lines.filter((line) => {
       try {
@@ -48,7 +53,6 @@ export class GeminiParticipant extends BaseParticipant {
     });
 
     if (jsonLines.length > 0) {
-      // Collect text parts from stream-json
       const textParts: string[] = [];
       for (const line of jsonLines) {
         const parsed = JSON.parse(line);

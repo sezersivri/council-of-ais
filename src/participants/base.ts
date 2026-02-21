@@ -1,5 +1,12 @@
 import { ParticipantConfig, ParticipantId, ProcessResult, ParticipantOutput } from '../types.js';
 
+export interface CommandSpec {
+  command: string;
+  args: string[];
+  stdinData?: string;
+  env?: Record<string, string | undefined>;
+}
+
 export abstract class BaseParticipant {
   public sessionStarted = false;
   public sessionId?: string;
@@ -14,11 +21,11 @@ export abstract class BaseParticipant {
     return this.config.timeoutMs;
   }
 
-  abstract buildFirstCommand(prompt: string): { command: string; args: string[]; stdinData?: string };
-  abstract buildContinueCommand(prompt: string): { command: string; args: string[]; stdinData?: string };
+  abstract buildFirstCommand(prompt: string): CommandSpec;
+  abstract buildContinueCommand(prompt: string): CommandSpec;
   abstract parseOutput(result: ProcessResult): ParticipantOutput;
 
-  buildCommand(prompt: string): { command: string; args: string[]; stdinData?: string } {
+  buildCommand(prompt: string): CommandSpec {
     if (this.sessionStarted) {
       return this.buildContinueCommand(prompt);
     }

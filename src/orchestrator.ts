@@ -41,16 +41,17 @@ async function runParticipantTurn(
   cwd: string,
   verbose: boolean,
 ): Promise<{ response: string; durationMs: number } | null> {
-  const { command, args, stdinData } = participant.buildCommand(prompt);
+  const { command, args, stdinData, env } = participant.buildCommand(prompt);
 
   if (verbose) {
-    log(`    Command: ${command} ${args.map((a) => a.length > 100 ? a.slice(0, 100) + '...' : a).join(' ')}`);
+    log(`    Command: ${command} ${args.join(' ')}${stdinData ? ' (prompt via stdin)' : ''}`);
   }
 
   const result = await runCliProcess(command, args, {
     cwd,
     timeoutMs: participant.timeout,
     stdinData,
+    env,
   });
 
   if (result.timedOut) {

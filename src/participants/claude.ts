@@ -2,11 +2,10 @@ import { BaseParticipant } from './base.js';
 import { ProcessResult, ParticipantOutput } from '../types.js';
 import { stripAnsi } from '../process-runner.js';
 
-const MAX_ARG_LENGTH = 30000;
-
 export class ClaudeParticipant extends BaseParticipant {
   buildFirstCommand(prompt: string) {
-    const args = ['--print', '--output-format', 'json'];
+    // Always pipe prompt via stdin to avoid shell quoting issues
+    const args = ['-p', '--output-format', 'json'];
 
     if (this.config.model) {
       args.push('--model', this.config.model);
@@ -15,21 +14,16 @@ export class ClaudeParticipant extends BaseParticipant {
       args.push(...this.config.extraArgs);
     }
 
-    if (prompt.length > MAX_ARG_LENGTH) {
-      args.push('--print');
-      return {
-        command: this.config.cliPath || 'claude',
-        args,
-        stdinData: prompt,
-      };
-    }
-
-    args.push('-p', prompt);
-    return { command: this.config.cliPath || 'claude', args };
+    return {
+      command: this.config.cliPath || 'claude',
+      args,
+      stdinData: prompt,
+      env: { CLAUDECODE: '' }, // Allow nesting inside Claude Code session
+    };
   }
 
   buildContinueCommand(prompt: string) {
-    const args = ['--continue', '--print', '--output-format', 'json'];
+    const args = ['--continue', '-p', '--output-format', 'json'];
 
     if (this.config.model) {
       args.push('--model', this.config.model);
@@ -38,16 +32,12 @@ export class ClaudeParticipant extends BaseParticipant {
       args.push(...this.config.extraArgs);
     }
 
-    if (prompt.length > MAX_ARG_LENGTH) {
-      return {
-        command: this.config.cliPath || 'claude',
-        args,
-        stdinData: prompt,
-      };
-    }
-
-    args.push('-p', prompt);
-    return { command: this.config.cliPath || 'claude', args };
+    return {
+      command: this.config.cliPath || 'claude',
+      args,
+      stdinData: prompt,
+      env: { CLAUDECODE: '' },
+    };
   }
 
   parseOutput(result: ProcessResult): ParticipantOutput {

@@ -8,15 +8,19 @@ export async function runCliProcess(
     cwd: string;
     timeoutMs: number;
     stdinData?: string;
+    env?: Record<string, string | undefined>;
   },
 ): Promise<ProcessResult> {
   const startTime = Date.now();
 
   return new Promise((resolve) => {
+    const env = { ...process.env, ...options.env };
+
     const proc = spawn(command, args, {
       cwd: options.cwd,
       shell: true,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env,
     });
 
     let stdout = '';
