@@ -2,7 +2,7 @@ export type ParticipantId = string;
 
 export type ConsensusStatus = 'emerging' | 'partial' | 'full' | 'disagreement';
 
-export type ConsensusSignal = 'AGREE' | 'DISAGREE' | 'PARTIALLY_AGREE';
+export type ConsensusSignal = 'AGREE' | 'AGREE_WITH_RESERVATION' | 'DISAGREE' | 'PARTIALLY_AGREE';
 
 export type QualityGate = 'pass' | 'warn' | 'fail';
 
@@ -21,6 +21,8 @@ export interface ResponseSections {
   pointsOfDisagreement: string[];
   proposal: string;
   consensusSignal: ConsensusSignal;
+  /** Reservation text from AGREE_WITH_RESERVATION signal (≥20 words) */
+  reservation?: string;
 }
 
 export interface DiscussionEntry {
@@ -102,6 +104,8 @@ export interface MultiAiConfig {
   jsonReport?: string;
   ci?: boolean;
   projectGuidance?: string;
+  /** Blind draft sub-round before peer context injection in rounds 2+ */
+  independentDraft?: boolean;
   /** Skip CLI preflight checks — for testing only */
   skipPreflight?: boolean;
 }

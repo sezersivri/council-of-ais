@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseResponseSections, extractCodeArtifact, detectConsensus } from '../src/consensus.js';
-import type { DiscussionState, DiscussionEntry, ConsensusSignal } from '../src/types.js';
+import { parseResponseSections, extractCodeArtifact, detectConsensus, isDeltasConverged, extractReservations } from '../src/consensus.js';
+import type { DiscussionState, DiscussionEntry, ConsensusSignal, ResponseSections } from '../src/types.js';
 
 function makeEntry(
   round: number,
@@ -260,5 +260,239 @@ describe('detectConsensus', () => {
     ]);
     // Only 1 valid respondent → emerging
     assert.equal(detectConsensus(state), 'emerging');
+  });
+
+  test('AGREE_WITH_RESERVATION counts as full agreement', () => {
+    const state = makeState([
+      makeEntry(1, 'claude', 'AGREE_WITH_RESERVATION'),
+      makeEntry(1, 'codex', 'AGREE_WITH_RESERVATION'),
+    ]);
+    assert.equal(detectConsensus(state), 'full');
+  });
+
+  test('mix of AGREE and AGREE_WITH_RESERVATION counts as full consensus', () => {
+    const state = makeState([
+      makeEntry(1, 'claude', 'AGREE'),
+      makeEntry(1, 'codex', 'AGREE_WITH_RESERVATION'),
+      makeEntry(1, 'gemini', 'AGREE'),
+    ]);
+    assert.equal(detectConsensus(state), 'full');
+  });
+
+  test('all-AGREE with non-empty deltas → emerging when requireDeltaConvergence=true', () => {
+    const agreeWithDeltas: DiscussionEntry = {
+      round: 1,
+      participant: 'claude',
+      timestamp: new Date().toISOString(),
+      rawResponse: '',
+      parsedSections: {
+        substance: '', deltas: ['+ adopted something'], convergence: null,
+        analysis: '', proposal: '', pointsOfAgreement: [], pointsOfDisagreement: [],
+        consensusSignal: 'AGREE',
+      },
+    };
+    const agreeNoDeltas: DiscussionEntry = {
+      round: 1,
+      participant: 'codex',
+      timestamp: new Date().toISOString(),
+      rawResponse: '',
+      parsedSections: {
+        substance: '', deltas: [], convergence: null,
+        analysis: '', proposal: '', pointsOfAgreement: [], pointsOfDisagreement: [],
+        consensusSignal: 'AGREE',
+      },
+    };
+    const state = makeState([agreeWithDeltas, agreeNoDeltas]);
+    // Without delta convergence: full (all AGREE)
+    assert.equal(detectConsensus(state, 1, false), 'full');
+    // With delta convergence: emerging (claude still has deltas)
+    assert.equal(detectConsensus(state, 1, true), 'emerging');
+  });
+
+  test('all-AGREE with all-empty deltas → full when requireDeltaConvergence=true', () => {
+    const makeAgreeEntry = (participant: 'claude' | 'codex'): DiscussionEntry => ({
+      round: 1,
+      participant,
+      timestamp: new Date().toISOString(),
+      rawResponse: '',
+      parsedSections: {
+        substance: '', deltas: [], convergence: null,
+        analysis: '', proposal: '', pointsOfAgreement: [], pointsOfDisagreement: [],
+        consensusSignal: 'AGREE',
+      },
+    });
+    const state = makeState([makeAgreeEntry('claude'), makeAgreeEntry('codex')]);
+    assert.equal(detectConsensus(state, 1, true), 'full');
+  });
+
+  test('AGREE_WITH_RESERVATION with consecutive rounds requirement', () => {
+    const state = makeState([
+      makeEntry(1, 'claude', 'AGREE_WITH_RESERVATION'),
+      makeEntry(1, 'codex', 'AGREE_WITH_RESERVATION'),
+      makeEntry(2, 'claude', 'AGREE_WITH_RESERVATION'),
+      makeEntry(2, 'codex', 'AGREE_WITH_RESERVATION'),
+    ]);
+    assert.equal(detectConsensus(state, 2), 'full');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AGREE_WITH_RESERVATION signal parsing
+// ---------------------------------------------------------------------------
+describe('AGREE_WITH_RESERVATION parsing', () => {
+  test('parses valid AGREE_WITH_RESERVATION with ≥20 words', () => {
+    const reservation = 'the deployment risk remains unmitigated especially if the load balancer fails during peak traffic and we have no fallback configured';
+    const raw = `### Substance\nMy position.\n\n### Deltas\nNone\n\n### Consensus Signal\nAGREE_WITH_RESERVATION: ${reservation}`;
+    const result = parseResponseSections(raw);
+    assert.ok(result);
+    assert.equal(result.consensusSignal, 'AGREE_WITH_RESERVATION');
+    assert.ok(result.reservation);
+    assert.ok(result.reservation!.length > 0);
+  });
+
+  test('short reservation (<20 words) demotes to PARTIALLY_AGREE', () => {
+    const raw = '### Substance\nMy position.\n\n### Deltas\nNone\n\n### Consensus Signal\nAGREE_WITH_RESERVATION: only five words here';
+    const result = parseResponseSections(raw);
+    assert.ok(result);
+    assert.equal(result.consensusSignal, 'PARTIALLY_AGREE');
+    assert.equal(result.reservation, undefined);
+  });
+
+  test('exactly 20-word reservation is valid', () => {
+    const words = Array(20).fill('word').join(' ');
+    const raw = `### Consensus Signal\nAGREE_WITH_RESERVATION: ${words}`;
+    const result = parseResponseSections(raw);
+    assert.ok(result);
+    assert.equal(result.consensusSignal, 'AGREE_WITH_RESERVATION');
+  });
+
+  test('19-word reservation demotes to PARTIALLY_AGREE', () => {
+    const words = Array(19).fill('word').join(' ');
+    const raw = `### Consensus Signal\nAGREE_WITH_RESERVATION: ${words}`;
+    const result = parseResponseSections(raw);
+    assert.ok(result);
+    assert.equal(result.consensusSignal, 'PARTIALLY_AGREE');
+  });
+
+  test('AGREE_WITH_RESERVATION is case-insensitive', () => {
+    const reservation = Array(20).fill('concern').join(' ');
+    const raw = `### Consensus Signal\nagree_with_reservation: ${reservation}`;
+    const result = parseResponseSections(raw);
+    assert.ok(result);
+    assert.equal(result.consensusSignal, 'AGREE_WITH_RESERVATION');
+  });
+
+  test('bare AGREE still parsed as AGREE (backward compat)', () => {
+    const raw = '### Consensus Signal\nAGREE';
+    const result = parseResponseSections(raw);
+    assert.ok(result);
+    assert.equal(result.consensusSignal, 'AGREE');
+    assert.equal(result.reservation, undefined);
+  });
+
+  test('reservation is not set when signal is AGREE', () => {
+    const raw = '### Substance\nMy position.\n\n### Deltas\nNone\n\n### Consensus Signal\nAGREE';
+    const result = parseResponseSections(raw);
+    assert.ok(result);
+    assert.equal(result.reservation, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isDeltasConverged
+// ---------------------------------------------------------------------------
+describe('isDeltasConverged', () => {
+  function makeEntryWithDeltas(
+    round: number,
+    participant: 'claude' | 'codex' | 'gemini',
+    deltas: string[],
+  ): DiscussionEntry {
+    return {
+      round,
+      participant,
+      timestamp: new Date().toISOString(),
+      rawResponse: '',
+      parsedSections: {
+        substance: '', deltas, convergence: null,
+        analysis: '', proposal: '', pointsOfAgreement: [], pointsOfDisagreement: [],
+        consensusSignal: 'AGREE',
+      },
+    };
+  }
+
+  test('returns true when all participants have empty deltas', () => {
+    const state = makeState([
+      makeEntryWithDeltas(1, 'claude', []),
+      makeEntryWithDeltas(1, 'codex', []),
+    ]);
+    assert.equal(isDeltasConverged(state, 1), true);
+  });
+
+  test('returns false when any participant has non-empty deltas', () => {
+    const state = makeState([
+      makeEntryWithDeltas(1, 'claude', ['+ adopted something']),
+      makeEntryWithDeltas(1, 'codex', []),
+    ]);
+    assert.equal(isDeltasConverged(state, 1), false);
+  });
+
+  test('returns true for empty round (no entries)', () => {
+    assert.equal(isDeltasConverged(makeState([]), 1), true);
+  });
+
+  test('null parsedSections entries are non-blocking', () => {
+    const state = makeState([
+      {
+        round: 1, participant: 'claude', timestamp: '', rawResponse: '', parsedSections: null,
+      },
+      makeEntryWithDeltas(1, 'codex', []),
+    ]);
+    assert.equal(isDeltasConverged(state, 1), true);
+  });
+
+  test('only checks the specified round', () => {
+    const state = makeState([
+      makeEntryWithDeltas(1, 'claude', ['+ old delta from round 1']),
+      makeEntryWithDeltas(2, 'claude', []),
+      makeEntryWithDeltas(2, 'codex', []),
+    ]);
+    assert.equal(isDeltasConverged(state, 1), false);
+    assert.equal(isDeltasConverged(state, 2), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractReservations
+// ---------------------------------------------------------------------------
+describe('extractReservations', () => {
+  test('extracts reservation texts from a round', () => {
+    const state = makeState([
+      {
+        round: 1, participant: 'claude', timestamp: '', rawResponse: '',
+        parsedSections: {
+          substance: '', deltas: [], convergence: null,
+          analysis: '', proposal: '', pointsOfAgreement: [], pointsOfDisagreement: [],
+          consensusSignal: 'AGREE_WITH_RESERVATION',
+          reservation: 'my specific concern about the failure mode',
+        },
+      },
+      {
+        round: 1, participant: 'codex', timestamp: '', rawResponse: '',
+        parsedSections: {
+          substance: '', deltas: [], convergence: null,
+          analysis: '', proposal: '', pointsOfAgreement: [], pointsOfDisagreement: [],
+          consensusSignal: 'AGREE',
+        },
+      },
+    ]);
+    const reservations = extractReservations(state, 1);
+    assert.equal(reservations.length, 1);
+    assert.ok(reservations[0].includes('[claude]'));
+    assert.ok(reservations[0].includes('failure mode'));
+  });
+
+  test('returns empty array when no reservations in round', () => {
+    const state = makeState([makeEntry(1, 'claude', 'AGREE'), makeEntry(1, 'codex', 'DISAGREE')]);
+    assert.deepEqual(extractReservations(state, 1), []);
   });
 });

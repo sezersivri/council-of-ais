@@ -22,9 +22,9 @@ import {
 } from './discussion.js';
 import {
   buildInitialPrompt, buildRoundPrompt, buildStatelessRoundPrompt, buildFinalSummaryPrompt,
-  buildTieBreakerLeadPrompt, buildTieBreakerFollowPrompt,
+  buildTieBreakerLeadPrompt, buildTieBreakerFollowPrompt, buildBlindDraftPrompt,
 } from './prompt-builder.js';
-import { parseResponseSections, extractCodeArtifact, detectConsensus } from './consensus.js';
+import { parseResponseSections, extractCodeArtifact, detectConsensus, isDeltasConverged } from './consensus.js';
 import { runCliProcess } from './process-runner.js';
 import { createParticipant, BaseParticipant } from './participants/index.js';
 import { validateArtifact } from './artifact-validator.js';
@@ -213,12 +213,19 @@ interface RoundEntryResult {
 function printRoundSummary(results: RoundEntryResult[], failedIds: Set<ParticipantId>, tokenLimitIds: Set<ParticipantId>) {
   log('');
   log('  ┌───────────┬──────────────────┬─────────┐');
+  const reservations: string[] = [];
   for (const { entry, durationMs } of results) {
     const signal = entry.parsedSections?.consensusSignal || 'UNKNOWN';
+    // Abbreviate AGREE_WITH_RESERVATION to fit 16-char column
+    const signalDisplay = signal === 'AGREE_WITH_RESERVATION' ? 'AGREE+RSRV' : signal;
     const name = entry.participant.padEnd(9);
-    const signalStr = signal.padEnd(16);
+    const signalStr = signalDisplay.padEnd(16);
     const duration = formatDuration(durationMs).padStart(7);
     log(`  │ ${name} │ ${signalStr} │ ${duration} │`);
+    if (entry.parsedSections?.reservation) {
+      const truncated = entry.parsedSections.reservation.slice(0, 40);
+      reservations.push(`    [${entry.participant}] "${truncated}${entry.parsedSections.reservation.length > 40 ? '...' : ''}"`);
+    }
   }
   for (const pid of failedIds) {
     const name = pid.padEnd(9);
@@ -229,6 +236,10 @@ function printRoundSummary(results: RoundEntryResult[], failedIds: Set<Participa
     }
   }
   log('  └───────────┴──────────────────┴─────────┘');
+  if (reservations.length > 0) {
+    log('  Reservations:');
+    for (const r of reservations) log(r);
+  }
 }
 
 let cleanupDone = false;
@@ -256,7 +267,8 @@ export function selectSummarizer(
   // Count AGREE signals per participant across all rounds
   const agreeCounts = new Map<ParticipantId, number>();
   for (const entry of state.entries) {
-    if (entry.parsedSections?.consensusSignal === 'AGREE') {
+    const sig = entry.parsedSections?.consensusSignal;
+    if (sig === 'AGREE' || sig === 'AGREE_WITH_RESERVATION') {
       agreeCounts.set(entry.participant, (agreeCounts.get(entry.participant) ?? 0) + 1);
     }
   }
@@ -355,6 +367,7 @@ export async function runDiscussionWithParticipants(
   log(`  Mode: ${config.watch ? 'Interactive (--watch)' : 'Automated'}`);
   if (config.validateArtifacts) log('  Artifact validation: ON');
   if (config.stream) log('  Streaming display: ON');
+  if (config.independentDraft) log('  Independent draft: ON (blind sub-round before peer context)');
   if (config.debug) log('  Debug logging: ON (stderr)');
   if (config.ci) log('  CI mode: ON');
   log(`  Output: ${outputPath}`);
@@ -394,10 +407,41 @@ export async function runDiscussionWithParticipants(
       break;
     }
 
+    // Blind draft phase (--independent-draft, rounds 2+)
+    // Collect each participant's position BEFORE injecting peer context.
+    const blindDrafts = new Map<ParticipantId, string>();
+    if (config.independentDraft && round > 1 && tieBreakerPhase === 'inactive') {
+      debugLog(config, 'BLIND_DRAFT_PHASE', 'Running independent draft sub-round before delta injection');
+      log('  [Blind Draft] Collecting independent positions...');
+
+      const bdTasks = roundParticipants.map(async (participant) => {
+        const bdPrompt = buildBlindDraftPrompt(
+          topic, participant.id, round, config.maxRounds, config.projectGuidance,
+        );
+        const result = await runParticipantTurnWithRetry(
+          participant, bdPrompt, process.cwd(), config.verbose,
+        );
+        return { participant, result };
+      });
+
+      const bdResults = await Promise.allSettled(bdTasks);
+      for (const settled of bdResults) {
+        if (settled.status === 'fulfilled' && settled.value.result) {
+          const { participant, result } = settled.value;
+          blindDrafts.set(participant.id, result.response);
+          const bdSections = parseResponseSections(result.response);
+          if (bdSections) {
+            debugLog(config, 'BLIND_DRAFT_PHASE', `${participant.id} blind-draft signal: ${bdSections.consensusSignal}`);
+          }
+        }
+      }
+    }
+
     // Build prompts
     const participantPrompts = new Map<BaseParticipant, string>();
     for (const participant of roundParticipants) {
       let prompt: string;
+      const blindDraft = blindDrafts.get(participant.id);
 
       if (round === 1) {
         prompt = buildInitialPrompt(
@@ -413,13 +457,13 @@ export async function runDiscussionWithParticipants(
         prompt = buildTieBreakerFollowPrompt(state, participant.id, leadParticipant.id, round, config.maxRounds, userGuidance);
       } else if (participant.isStateless() && round > 1) {
         debugLog(config, 'STATELESS_INJECT', `${participant.id} is stateless — building full-context prompt`);
-        prompt = buildStatelessRoundPrompt(state, participant.id, round, config.maxRounds, userGuidance);
+        prompt = buildStatelessRoundPrompt(state, participant.id, round, config.maxRounds, userGuidance, blindDraft);
       } else {
         const isFreshSession = !participant.sessionStarted && round > 1;
         if (isFreshSession) {
           debugLog(config, 'CATCHUP_INJECT', `${participant.id} has no session — injecting catch-up context`);
         }
-        prompt = buildRoundPrompt(state, participant.id, round, config.maxRounds, userGuidance, isFreshSession);
+        prompt = buildRoundPrompt(state, participant.id, round, config.maxRounds, userGuidance, isFreshSession, blindDraft);
       }
 
       if (round > 1 && permanentlyFailed.size > 0) {
@@ -575,9 +619,24 @@ export async function runDiscussionWithParticipants(
       sessionMap.set(participant.id, participant.sessionId);
     }
 
+    // Flip detection: log participants whose final signal differs from blind-draft signal
+    if (blindDrafts.size > 0) {
+      for (const { entry } of roundResults) {
+        const bdText = blindDrafts.get(entry.participant as ParticipantId);
+        if (bdText) {
+          const bdSections = parseResponseSections(bdText);
+          const finalSignal = entry.parsedSections?.consensusSignal;
+          const bdSignal = bdSections?.consensusSignal;
+          if (bdSignal && finalSignal && bdSignal !== finalSignal) {
+            debugLog(config, 'FLIP_DETECTED', `${entry.participant} flipped: ${bdSignal} → ${finalSignal}`);
+          }
+        }
+      }
+    }
+
     // Record round data
     const roundDurationMs = Date.now() - roundStart;
-    const roundConsensusStatus = detectConsensus(state, config.consensusThreshold);
+    const roundConsensusStatus = detectConsensus(state, config.consensusThreshold, true);
     roundDataList.push({
       round,
       entries: roundResults.map((r) => r.entry),

@@ -14,16 +14,27 @@ function sectionRegex(name: string): RegExp {
   );
 }
 
-function parseSignal(rawResponse: string): ConsensusSignal {
+function parseSignal(rawResponse: string): { signal: ConsensusSignal; reservation?: string } {
   const signalMatch = rawResponse.match(sectionRegex('Consensus Signal'));
   const signalText = signalMatch?.[1]?.trim() || '';
   if (/\bPARTIALLY_AGREE\b/i.test(signalText) || /\bPARTIALLY AGREE\b/i.test(signalText)) {
-    return 'PARTIALLY_AGREE';
+    return { signal: 'PARTIALLY_AGREE' };
+  }
+  // AGREE_WITH_RESERVATION must be checked before plain AGREE (it contains the word AGREE)
+  const awrMatch = signalText.match(/\bAGREE_WITH_RESERVATION\s*:\s*(.+)/i);
+  if (awrMatch) {
+    const reservation = awrMatch[1].trim();
+    const wordCount = reservation.split(/\s+/).filter(Boolean).length;
+    if (wordCount >= 20) {
+      return { signal: 'AGREE_WITH_RESERVATION', reservation };
+    }
+    // Reservation too short — demote to PARTIALLY_AGREE
+    return { signal: 'PARTIALLY_AGREE' };
   }
   if (/\bAGREE\b/.test(signalText) && !/\bDISAGREE\b/.test(signalText)) {
-    return 'AGREE';
+    return { signal: 'AGREE' };
   }
-  return 'DISAGREE';
+  return { signal: 'DISAGREE' };
 }
 
 function parseDeltaBullets(text: string): string[] {
@@ -47,7 +58,7 @@ const extractBullets = (text: string | undefined): string[] => {
 
 export function parseResponseSections(rawResponse: string): ResponseSections | null {
   try {
-    const consensusSignal = parseSignal(rawResponse);
+    const { signal: consensusSignal, reservation } = parseSignal(rawResponse);
 
     // Try new High-Signal format first (Substance / Deltas / Consensus Signal)
     const substanceMatch = rawResponse.match(sectionRegex('Substance'));
@@ -77,6 +88,7 @@ export function parseResponseSections(rawResponse: string): ResponseSections | n
           .filter((d) => /^-/.test(d))
           .map((d) => d.replace(/^-\s*(reject:)?\s*/i, '')),
         consensusSignal,
+        ...(reservation !== undefined ? { reservation } : {}),
       };
     }
 
@@ -98,6 +110,7 @@ export function parseResponseSections(rawResponse: string): ResponseSections | n
       pointsOfAgreement: extractBullets(agreeMatch?.[1]),
       pointsOfDisagreement: extractBullets(disagreeMatch?.[1]),
       consensusSignal,
+      ...(reservation !== undefined ? { reservation } : {}),
     };
   } catch {
     return null;
@@ -118,9 +131,31 @@ export function extractCodeArtifact(rawResponse: string): { code: string; langua
   return code ? { code, language } : null;
 }
 
+/**
+ * Returns true if all participants in the given round have empty Deltas
+ * (i.e., no position changes). Participants with null parsedSections are
+ * non-blocking — they don't prevent convergence.
+ */
+export function isDeltasConverged(state: DiscussionState, round: number): boolean {
+  const roundEntries = state.entries.filter((e) => e.round === round && e.parsedSections !== null);
+  if (roundEntries.length === 0) return true;
+  return roundEntries.every((e) => (e.parsedSections?.deltas ?? []).length === 0);
+}
+
+/**
+ * Collect all reservation texts from a given round.
+ * Returns strings like "[claude] my specific concern about..."
+ */
+export function extractReservations(state: DiscussionState, round: number): string[] {
+  return state.entries
+    .filter((e) => e.round === round && e.parsedSections?.reservation)
+    .map((e) => `[${e.participant}] ${e.parsedSections!.reservation}`);
+}
+
 export function detectConsensus(
   state: DiscussionState,
   requiredConsecutiveAgrees: number = 1,
+  requireDeltaConvergence: boolean = false,
 ): ConsensusStatus {
   const maxRound = state.entries.length > 0
     ? Math.max(...state.entries.map((e) => e.round))
@@ -144,11 +179,16 @@ export function detectConsensus(
   }
 
   const signals = Array.from(latestSignals.values());
-  const agreeCount = signals.filter((s) => s === 'AGREE').length;
+  // AGREE_WITH_RESERVATION counts as full agreement for consensus math
+  const agreeCount = signals.filter((s) => s === 'AGREE' || s === 'AGREE_WITH_RESERVATION').length;
   const partialCount = signals.filter((s) => s === 'PARTIALLY_AGREE').length;
 
   // Full consensus: all respondents agree (handles partial failures gracefully)
   if (agreeCount === respondedCount) {
+    // Delta convergence check: if deltas still changing, not yet stable
+    if (requireDeltaConvergence && !isDeltasConverged(state, maxRound)) {
+      return 'emerging';
+    }
     if (requiredConsecutiveAgrees > 1) {
       return checkConsecutiveConsensus(state, requiredConsecutiveAgrees)
         ? 'full'
@@ -180,7 +220,8 @@ function checkConsecutiveConsensus(
     const roundEntries = state.entries.filter((e) => e.round === r);
     if (roundEntries.length < 2) return false;
     const allAgree = roundEntries.every(
-      (e) => e.parsedSections?.consensusSignal === 'AGREE',
+      (e) => e.parsedSections?.consensusSignal === 'AGREE' ||
+             e.parsedSections?.consensusSignal === 'AGREE_WITH_RESERVATION',
     );
     if (!allAgree) return false;
   }

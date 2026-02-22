@@ -16,6 +16,7 @@ interface CliOverrides {
   validateArtifacts?: boolean;
   stream?: boolean;
   dryRun?: boolean;
+  independentDraft?: boolean;
   debug?: boolean;
   jsonReport?: string;
   ci?: boolean;
@@ -125,6 +126,7 @@ export function loadConfig(configPath: string | undefined, overrides: CliOverrid
     validateArtifacts: overrides.validateArtifacts ?? false,
     stream: overrides.stream ?? false,
     dryRun: overrides.dryRun ?? false,
+    independentDraft: overrides.independentDraft ?? false,
     debug: overrides.debug ?? (rawConfig.debug as boolean) ?? false,
     jsonReport: rawJsonReport !== undefined ? safeResolvePath(cwd, rawJsonReport) : undefined,
     ci: isCi,

@@ -59,6 +59,7 @@ program
   .option('--stream', 'Show live streaming progress for each participant', false)
   .option('--dry-run', 'Print Round 1 prompts and exit without invoking CLIs', false)
   .option('--replay <path>', 'Replay a saved discussion from a state JSON file')
+  .option('--independent-draft', 'Blind draft sub-round before peer context injection in rounds 2+', false)
   .option('--debug', 'Emit structured state-transition debug logs to stderr', false)
   .option('--json-report <path>', 'Write a structured JSON report to the given file path')
   .option(
@@ -113,6 +114,7 @@ program
         validateArtifacts: options.validateArtifacts,
         stream: options.stream,
         dryRun: options.dryRun,
+        independentDraft: options.independentDraft,
         debug: options.debug,
         jsonReport: options.jsonReport,
         ci: options.ci,

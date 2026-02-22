@@ -48,7 +48,32 @@ Your position, reasoning, and concrete plan. No preamble.
 None (or +/-/~ bullets if you have position changes)
 
 ### Consensus Signal
-Write exactly one of: \`AGREE\`, \`PARTIALLY_AGREE\`, or \`DISAGREE\` on its own line.`;
+If you agree, write: \`AGREE_WITH_RESERVATION: [≥20 words naming a specific concern or failure mode]\`
+Otherwise write \`PARTIALLY_AGREE\` or \`DISAGREE\`.
+(Bare \`AGREE\` is also accepted for backward compatibility.)`;
+
+/**
+ * Build a blind draft prompt for the independent-draft sub-round.
+ * Participants write their position without seeing peer responses.
+ */
+export function buildBlindDraftPrompt(
+  topic: string,
+  participantId: ParticipantId,
+  roundNumber: number,
+  maxRounds: number,
+  userGuidance?: string,
+): string {
+  const guidanceText = userGuidance ? `\n\n**Project guidance:** ${userGuidance}` : '';
+  return [
+    `Round ${roundNumber} of ${maxRounds} — Blind Draft Phase.`,
+    '',
+    `**Topic:** ${topic.slice(0, 300)}`,
+    '',
+    "Without seeing peers' responses, state your current position in 150 words or less.",
+    'Write ONLY a `### Substance` section. No Deltas. No Consensus Signal.',
+    guidanceText,
+  ].filter(Boolean).join('\n');
+}
 
 export function buildRoundPrompt(
   state: DiscussionState,
@@ -57,6 +82,7 @@ export function buildRoundPrompt(
   maxRounds: number,
   userGuidance?: string,
   isFreshSession?: boolean,
+  blindDraft?: string,
 ): string {
   const template = readFileSync(join(TEMPLATES_DIR, 'round-prompt.md'), 'utf-8');
 
@@ -93,6 +119,10 @@ export function buildRoundPrompt(
     .replace(/\{\{USER_GUIDANCE\}\}/g, guidanceText)
     .replace(/\{\{CONVERGENCE_INSTRUCTION\}\}/g, convergenceInstruction);
 
+  const blindDraftPrefix = blindDraft
+    ? `**Your blind draft (do not change your core position, only integrate peer feedback):**\n${blindDraft}\n\n`
+    : '';
+
   // Item 9: prepend catch-up context for participants rejoining after a session reset
   if (isFreshSession && roundNumber > 1) {
     const catchUp = [
@@ -110,10 +140,10 @@ export function buildRoundPrompt(
       'Now continue with this round\'s delta:',
       '',
     ].join('\n');
-    return catchUp + roundPrompt;
+    return blindDraftPrefix + catchUp + roundPrompt;
   }
 
-  return roundPrompt;
+  return blindDraftPrefix + roundPrompt;
 }
 
 /**
@@ -236,6 +266,7 @@ export function buildStatelessRoundPrompt(
   roundNumber: number,
   maxRounds: number,
   userGuidance?: string,
+  blindDraft?: string,
 ): string {
   // Compress previous rounds into one line each
   const historyLines: string[] = [];
@@ -255,7 +286,7 @@ export function buildStatelessRoundPrompt(
     historyLines.length > 0 ? historyLines.join('\n') : '*No previous rounds.*';
 
   // Build the standard delta prompt (what others said last round)
-  const deltaPrompt = buildRoundPrompt(state, participantId, roundNumber, maxRounds, userGuidance);
+  const deltaPrompt = buildRoundPrompt(state, participantId, roundNumber, maxRounds, userGuidance, false, blindDraft);
 
   const contextHeader = [
     '## Full Discussion Context',

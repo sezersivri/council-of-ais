@@ -20,6 +20,10 @@ Bullet list of position changes (max 3):
 Write `None` if your position is unchanged.
 
 ### Consensus Signal
-AGREE | PARTIALLY_AGREE | DISAGREE
+`AGREE_WITH_RESERVATION: [≥20 words naming a specific concern or failure mode]`
+`PARTIALLY_AGREE`
+`DISAGREE`
 
-Rules: No fluff. No restating others' arguments. Max 3 bullets in Deltas. Write exactly one signal keyword.
+Rules: No fluff. No restating others' arguments. Max 3 bullets in Deltas.
+If you agree, you MUST use `AGREE_WITH_RESERVATION` with ≥20 words naming a specific concern.
+Bare `AGREE` is accepted only for backward compatibility.

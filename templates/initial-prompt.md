@@ -16,7 +16,9 @@ No preamble. No restating the topic. No politeness filler.
 None
 
 ### Consensus Signal
-AGREE | PARTIALLY_AGREE | DISAGREE
+`AGREE_WITH_RESERVATION: [≥20 words naming a specific concern or failure mode]`
+`PARTIALLY_AGREE`
+`DISAGREE`
 
 ## Rules
 
@@ -24,6 +26,7 @@ AGREE | PARTIALLY_AGREE | DISAGREE
 - **No restating the topic** or others' full positions
 - **Max 3 bullets** in Deltas
 - **Deltas must always be present** — write `None` in Round 1
-- Write exactly `AGREE`, `PARTIALLY_AGREE`, or `DISAGREE` under Consensus Signal — nothing else
+- If you wish to agree, use `AGREE_WITH_RESERVATION: [≥20 words]` — bare `AGREE` accepted in Round 1 only
+- Write exactly one signal keyword under Consensus Signal — nothing else
 
 This is Round 1. Set Deltas to exactly `None`.
