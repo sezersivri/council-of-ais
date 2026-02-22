@@ -6,6 +6,37 @@ import { loadConfig } from './config.js';
 import { runDiscussion } from './orchestrator.js';
 import { replay } from './replay.js';
 
+/**
+ * Generate a distinctive output filename from the topic or topic file.
+ * Format: {slug}-{YYYYMMDD-HHmmss}.md
+ * Examples: "design-a-rest-api-20260222-143012.md"
+ *           "agent-souls-review-20260222-143012.md"
+ */
+function buildOutputFilename(topic: string, topicFile?: string): string {
+  const now = new Date();
+  const ts = now.toISOString().replace(/[-:T]/g, '').slice(0, 15).replace(/(\d{8})(\d{6})/, '$1-$2');
+
+  let slug: string;
+  if (topicFile) {
+    // Use the file basename without extension
+    slug = topicFile.replace(/\\/g, '/').split('/').pop()!.replace(/\.[^.]+$/, '');
+  } else {
+    // Slugify the first 6 words of the topic
+    slug = topic
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .trim()
+      .split(/\s+/)
+      .slice(0, 6)
+      .join('-');
+  }
+
+  // Sanitise: only allow alphanumeric, hyphens, underscores
+  slug = slug.replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+
+  return `${slug}-${ts}.md`;
+}
+
 const program = new Command();
 
 program
@@ -20,7 +51,7 @@ program
     'Comma-separated list of participant IDs (built-ins: claude,codex,gemini; or IDs from multi-ai.json)',
     'claude,codex,gemini',
   )
-  .option('-o, --output <file>', 'Output file name', 'discussion.md')
+  .option('-o, --output <file>', 'Output file name (default: auto-generated from topic + timestamp)')
   .option('-c, --config <path>', 'Path to config file')
   .option('-w, --watch', 'Interactive mode: pause between rounds for user input', false)
   .option('-v, --verbose', 'Enable verbose output', false)
@@ -59,6 +90,9 @@ program
         process.exit(2);
       }
 
+      // Auto-generate a distinctive output filename if not explicitly set
+      const outputFile: string = options.output ?? buildOutputFilename(topic, options.topicFile);
+
       const participantIds = (options.participants as string)
         .split(',')
         .map((p: string) => p.trim().toLowerCase())
@@ -73,7 +107,7 @@ program
       const config = loadConfig(options.config, {
         maxRounds: parseInt(options.rounds, 10),
         participants: participantIds,
-        outputFile: options.output,
+        outputFile,
         verbose: options.verbose,
         watch: options.watch,
         validateArtifacts: options.validateArtifacts,
