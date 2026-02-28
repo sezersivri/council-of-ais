@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import { loadConfig } from './config.js';
 import { runDiscussion } from './orchestrator.js';
 import { replay } from './replay.js';
+import { autoDetectModels } from './auto-detect.js';
 
 /**
  * Generate a distinctive output filename from the topic or topic file.
@@ -60,6 +61,7 @@ program
   .option('--dry-run', 'Print Round 1 prompts and exit without invoking CLIs', false)
   .option('--replay <path>', 'Replay a saved discussion from a state JSON file')
   .option('--independent-draft', 'Blind draft sub-round before peer context injection in rounds 2+', false)
+  .option('--auto', 'Probe CLIs and select the best available model for each participant', false)
   .option('--debug', 'Emit structured state-transition debug logs to stderr', false)
   .option('--json-report <path>', 'Write a structured JSON report to the given file path')
   .option(
@@ -118,7 +120,20 @@ program
         debug: options.debug,
         jsonReport: options.jsonReport,
         ci: options.ci,
+        auto: options.auto,
       });
+
+      if (config.auto) {
+        console.error('Auto-detecting best models...');
+        const results = await autoDetectModels(config);
+        for (const r of results) {
+          if (r.detectedModel) {
+            console.error(`  ${r.participantId}: ${r.detectedModel}`);
+          } else {
+            console.error(`  ${r.participantId}: detection failed, keeping ${r.previousModel ?? 'default'}`);
+          }
+        }
+      }
 
       const result = await runDiscussion(topic, config);
 

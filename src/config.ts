@@ -22,12 +22,13 @@ interface CliOverrides {
   ci?: boolean;
   projectGuidance?: string;
   skipPreflight?: boolean;
+  auto?: boolean;
 }
 
 export const RECOMMENDED_MODELS: Record<string, string> = {
   claude: 'claude-opus-4-6',
   codex: 'gpt-5.3-codex',
-  gemini: 'gemini-3-pro-preview',
+  gemini: 'gemini-3.1-pro-preview',
 };
 
 const DEFAULT_PARTICIPANTS: Record<string, ParticipantConfig> = {
@@ -132,6 +133,7 @@ export function loadConfig(configPath: string | undefined, overrides: CliOverrid
     ci: isCi,
     projectGuidance: overrides.projectGuidance ?? (rawConfig.guidance as string | undefined),
     skipPreflight: overrides.skipPreflight ?? false,
+    auto: overrides.auto ?? (rawConfig.auto as boolean) ?? false,
     participants: buildParticipantConfigs(configParticipants, overrides.participants),
   };
 

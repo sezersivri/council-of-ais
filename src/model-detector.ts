@@ -23,9 +23,9 @@ export const MODEL_PRIORITY: Record<ParticipantId, string[]> = {
     'gpt-4o',
   ],
   gemini: [
+    'gemini-3.1-pro-preview',
     'gemini-3-pro-preview',
     'gemini-2.5-pro',
-    'gemini-2.0-pro',
     'gemini-2.0-flash',
   ],
 };

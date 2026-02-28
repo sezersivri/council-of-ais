@@ -15,7 +15,7 @@
     "test-clis": "npx tsx scripts/test-clis.ts",
     "update-models": "npx tsx scripts/update-models.ts",
     "self-review": "npx tsx src/index.ts --topic-file topics/self-review.md --config config.self-review.json",
-    "test": "node --import tsx/esm --test tests/consensus.test.ts tests/discussion.test.ts tests/config.test.ts tests/orchestrator.test.ts tests/replay.test.ts tests/prompt-builder.test.ts tests/participants/base.test.ts tests/participants/claude.test.ts tests/participants/codex.test.ts tests/participants/gemini.test.ts tests/participants/generic.test.ts"
+    "test": "node --import tsx/esm --test tests/consensus.test.ts tests/discussion.test.ts tests/config.test.ts tests/orchestrator.test.ts tests/replay.test.ts tests/prompt-builder.test.ts tests/auto-detect.test.ts tests/model-detector.test.ts tests/participants/base.test.ts tests/participants/claude.test.ts tests/participants/codex.test.ts tests/participants/gemini.test.ts tests/participants/generic.test.ts"
   },
   "dependencies": {
     "commander": "^14.0.0"

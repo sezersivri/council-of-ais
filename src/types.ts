@@ -108,6 +108,8 @@ export interface MultiAiConfig {
   independentDraft?: boolean;
   /** Skip CLI preflight checks — for testing only */
   skipPreflight?: boolean;
+  /** Probe CLIs at startup and use the best available model for each participant */
+  auto?: boolean;
 }
 
 export interface ProcessResult {

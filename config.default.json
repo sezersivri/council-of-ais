@@ -28,7 +28,7 @@
       "id": "gemini",
       "enabled": true,
       "cliPath": "gemini",
-      "model": "gemini-3-pro-preview",
+      "model": "gemini-3.1-pro-preview",
       "timeoutMs": 300000,
       "maxRetries": 1,
       "extraArgs": []
